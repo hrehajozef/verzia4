@@ -131,7 +131,7 @@ _DEPT_SAMPLE  = "\n".join(
 
 SYSTEM_PROMPT = f"""Si expert na analýzu afiliácií vedeckých publikácií UTB (Tomas Bata University in Zlín).
 
-## Tvoja úloha
+## Tvoja úloha:
 Identifikuj interných UTB autorov z poskytnutých afiliačných textov (WoS a Scopus formát).
 Pre každého autora urč fakultu a oddelenie/ústav.
 

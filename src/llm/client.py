@@ -60,7 +60,7 @@ class OllamaClient(LLMClient):
             return response.json()["message"]["content"]
 
 
-class OpenAICompatibleClient(LLMClient):
+class CloudLLMCompatibleClient(LLMClient):
     """
     Klient pre OpenAI-kompatibilné endpointy (OpenAI, Groq, Mistral, ...).
 
@@ -177,7 +177,7 @@ def get_llm_client(provider: str | None = None) -> LLMClient:
         print("[LLM] Ollama nedostupná – prepínam na OpenAI endpoint")
 
     print(f"[LLM] OpenAI-kompatibilný endpoint: {settings.openai_model}")
-    return OpenAICompatibleClient()
+    return CloudLLMCompatibleClient()
 
 
 def parse_llm_json_output(raw: str) -> dict:

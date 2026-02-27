@@ -8,19 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-
-def _load_env_file() -> None:
-    """Načíta .env zo štandardných umiestnení projektu."""
-    config_dir = Path(__file__).resolve().parent
-    project_root = config_dir.parents[1]
-
-    for env_path in (project_root / ".env", config_dir / ".env"):
-        if env_path.exists():
-            load_dotenv(env_path, override=False)
-            break
-
-
-_load_env_file()
+load_dotenv(Path(__file__).resolve().parents[0] / ".env")
 
 
 DEFAULT_UTB_KEYWORDS = [
@@ -77,8 +65,8 @@ class Settings:
     local_db_host: str = field(default_factory=lambda: _get_str("LOCAL_DB_HOST"))
     local_db_port: int = field(default_factory=lambda: _get_int("LOCAL_DB_PORT"))
     local_db_name: str = field(default_factory=lambda: _get_str("LOCAL_DB_NAME"))
-    local_db_user: str = field(default_factory=lambda: _get_str("LOCAL_DB_USER"))
-    local_db_password: str = field(default_factory=lambda: _get_str("LOCAL_DB_PASSWORD"))
+    local_db_user: str = field(default_factory=lambda: _get_str("LOCAL_DB_USER", default="postgres"))
+    local_db_password: str = field(default_factory=lambda: _get_str("LOCAL_DB_PASSWORD", default="postgres"))
 
     remote_schema: str = field(default_factory=lambda: _get_str("REMOTE_SCHEMA"))
     remote_table: str = field(default_factory=lambda: _get_str("REMOTE_TABLE"))
