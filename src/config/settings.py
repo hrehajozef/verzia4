@@ -8,7 +8,19 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[0] / ".env")   # toto je cesta k .env súboru, ktorý je 2 úrovne nad src/config
+
+def _load_env_file() -> None:
+    """Načíta .env zo štandardných umiestnení projektu."""
+    config_dir = Path(__file__).resolve().parent
+    project_root = config_dir.parents[1]
+
+    for env_path in (project_root / ".env", config_dir / ".env"):
+        if env_path.exists():
+            load_dotenv(env_path, override=False)
+            break
+
+
+_load_env_file()
 
 
 DEFAULT_UTB_KEYWORDS = [
