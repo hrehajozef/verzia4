@@ -19,12 +19,12 @@ class LLMStatus:
 
 
 class FlagKey:
-    NO_WOS_DATA          = "no_wos_data"
-    PARSE_WARNINGS       = "wos_parse_warnings"
-    MULTIPLE_UTB_BLOCKS  = "multiple_utb_blocks"
+    NO_WOS_DATA           = "no_wos_data"
+    PARSE_WARNINGS        = "wos_parse_warnings"
+    MULTIPLE_UTB_BLOCKS   = "multiple_utb_blocks"
     UNMATCHED_UTB_AUTHORS = "utb_authors_unmatched"
-    MATCHED_UTB_AUTHORS  = "utb_authors_found_count"
-    ERROR                = "error"
+    MATCHED_UTB_AUTHORS   = "utb_authors_found_count"
+    ERROR                 = "error"
 
 
 @dataclass(frozen=True)
@@ -34,19 +34,14 @@ class OutputColumn:
     default_sql: str | None = None
 
 
-# Výstupné stĺpce pridané do lokálnej tabuľky.
-# TEXT[] = PostgreSQL array – psycopg3 preloží Python list automaticky.
 OUTPUT_COLUMNS: tuple[OutputColumn, ...] = (
     OutputColumn("flags",                          "JSONB",   "'{}'::jsonb"),
     OutputColumn("heuristic_status",               "TEXT",    f"'{HeuristicStatus.NOT_PROCESSED}'"),
     OutputColumn("heuristic_version",              "TEXT"),
     OutputColumn("heuristic_processed_at",         "TIMESTAMPTZ"),
     OutputColumn("needs_llm",                      "BOOLEAN", "FALSE"),
-    # Všetci autori publikácie – kópia z dc.contributor.author
     OutputColumn("dc_contributor_author",          "TEXT[]"),
-    # Interní UTB autori ako PostgreSQL pole
     OutputColumn("utb_contributor_internalauthor", "TEXT[]"),
-    # Fakulty a oddelenia interných autorov – PostgreSQL polia
     OutputColumn("utb_faculty",                    "TEXT[]"),
     OutputColumn("utb_ou",                         "TEXT[]"),
     OutputColumn("llm_result",                     "JSONB"),
@@ -55,7 +50,7 @@ OUTPUT_COLUMNS: tuple[OutputColumn, ...] = (
 )
 
 # -----------------------------------------------------------------------
-# Fakulty UTB:  faculty_id  →  plný anglický názov
+# Fakulty UTB:  faculty_id → plný anglický názov
 # -----------------------------------------------------------------------
 FACULTIES: dict[str, str] = {
     "FLKR": "Faculty of Logistics and Crisis Management",
@@ -64,76 +59,169 @@ FACULTIES: dict[str, str] = {
     "FAI":  "Faculty of Applied Informatics",
     "FHS":  "Faculty of Humanities",
     "FMK":  "Faculty of Multimedia Communications",
+    "UI":   "University Institute",   # Centre of Polymer Systems a iné univerzitné ústavy
 }
 
 # -----------------------------------------------------------------------
-# Oddelenia / ústavy UTB:  plný názov  →  faculty_id
+# Oddelenia / ústavy UTB:  plný názov → faculty_id
 # -----------------------------------------------------------------------
 DEPARTMENTS: dict[str, str] = {
-    # FLKR
-    "Department of Logistics":                  "FLKR",
-    "Department of Crisis Management":          "FLKR",
-    "Department of Population Protection":      "FLKR",
-    "Department of Environmental Security":     "FLKR",
-    # FT
-    "Department of Food Analysis and Chemistry":           "FT",
-    "Department of Physics and Materials Engineering":     "FT",
-    "Department of Chemistry":                             "FT",
-    "Department of Environmental Protection Engineering":  "FT",
-    "Department of Polymer Engineering":                   "FT",
-    "Department of Food Technology":                       "FT",
-    "Department of Fat, Surfactant and Cosmetics Technology": "FT",
-    "Department of Production Engineering":                "FT",
-    # FAME
-    "Department of Economics":                                              "FAME",
-    "Department of Management and Marketing":                               "FAME",
-    "Department of Business Administration":                                "FAME",
-    "Department of Industrial Engineering and Information Systems":         "FAME",
-    "Department of Finance and Accounting":                                 "FAME",
+    # --- University Institute (UI) ---
+    "Centre of Polymer Systems":                                        "UI",
+    "University Institute":                                             "UI",
+
+    # --- FLKR ---
+    "Department of Logistics":                                          "FLKR",
+    "Department of Crisis Management":                                  "FLKR",
+    "Department of Population Protection":                              "FLKR",
+    "Department of Environmental Security":                             "FLKR",
+    "Department of Health Care and Population Protection":              "FLKR",
+
+    # --- FT ---
+    "Department of Food Analysis and Chemistry":                        "FT",
+    "Department of Physics and Materials Engineering":                  "FT",
+    "Department of Chemistry":                                          "FT",
+    "Department of Environmental Protection Engineering":               "FT",
+    "Department of Polymer Engineering":                                "FT",
+    "Department of Food Technology":                                    "FT",
+    "Department of Fat, Surfactant and Cosmetics Technology":           "FT",
+    "Department of Production Engineering":                             "FT",
+
+    # --- FAME ---
+    "Department of Economics":                                          "FAME",
+    "Department of Management and Marketing":                           "FAME",
+    "Department of Business Administration":                            "FAME",
+    "Department of Industrial Engineering and Information Systems":     "FAME",
+    "Department of Finance and Accounting":                             "FAME",
     "Department of Regional Development, Public Sector Administration and Law": "FAME",
-    "Department of Statistics and Quantitative Methods":                    "FAME",
-    "Department of Physical Training":                                      "FAME",
-    "Center for Applied Economic Research":                                 "FAME",
-    # FAI
-    "Department of Informatics and Artificial Intelligence":                "FAI",
-    "Department of Computer and Communication Systems":                     "FAI",
-    "Department of Automation and Control Engineering":                     "FAI",
-    "Department of Electronics and Measurements":                           "FAI",
-    "Department of Security Engineering":                                   "FAI",
-    "Department of Mathematics":                                            "FAI",
-    "Department of Process Control":                                        "FAI",
-    "Centre for Security, Information and Advanced Technologies (CEBIA – Tech)": "FAI",
-    "ICT Technology Park":                                                  "FAI",
-    # FHS
-    "Department of Modern Languages and Literatures":   "FHS",
-    "Language Centre":                                  "FHS",
-    "Department of Pedagogical Sciences":               "FHS",
-    "Department of School Education":                   "FHS",
-    "Department of Health Care Sciences":               "FHS",
-    "Research Centre of FHS":                           "FHS",
-    "Education Support Centre":                         "FHS",
-    # FMK
-    "Animation":                            "FMK",
-    "Arts Management":                      "FMK",
-    "Audiovisual Arts":                     "FMK",
-    "Department of Marketing Communications": "FMK",
-    "Department of Theoretical Studies":    "FMK",
-    "Digital Design":                       "FMK",
-    "Fashion Design":                       "FMK",
-    "Game Design":                          "FMK",
-    "Glass":                                "FMK",
-    "Graphic Design":                       "FMK",
-    "Industrial Design":                    "FMK",
-    "Jewellery Design":                     "FMK",
-    "Photography":                          "FMK",
-    "Product Design":                       "FMK",
-    "Shoe Design":                          "FMK",
-    "Spatial Design":                       "FMK",
+    "Department of Statistics and Quantitative Methods":                "FAME",
+    "Department of Physical Training":                                  "FAME",
+    "Center for Applied Economic Research":                             "FAME",
+
+    # --- FAI ---
+    "Department of Informatics and Artificial Intelligence":            "FAI",
+    "Department of Computer and Communication Systems":                 "FAI",
+    "Department of Automation and Control Engineering":                 "FAI",
+    "Department of Electronics and Measurements":                       "FAI",
+    "Department of Security Engineering":                               "FAI",
+    "Department of Mathematics":                                        "FAI",
+    "Department of Process Control":                                    "FAI",
+    "Centre for Security, Information and Advanced Technologies (CEBIA-Tech)": "FAI",
+    "ICT Technology Park":                                              "FAI",
+
+    # --- FHS ---
+    "Department of Modern Languages and Literatures":                   "FHS",
+    "Language Centre":                                                  "FHS",
+    "Department of Pedagogical Sciences":                               "FHS",
+    "Department of School Education":                                   "FHS",
+    "Department of Health Care Sciences":                               "FHS",
+    "Research Centre of FHS":                                           "FHS",
+    "Education Support Centre":                                         "FHS",
+
+    # --- FMK ---
+    "Animation":                                                        "FMK",
+    "Arts Management":                                                  "FMK",
+    "Audiovisual Arts":                                                  "FMK",
+    "Department of Marketing Communications":                           "FMK",
+    "Department of Theoretical Studies":                                "FMK",
+    "Digital Design":                                                   "FMK",
+    "Fashion Design":                                                   "FMK",
+    "Game Design":                                                      "FMK",
+    "Glass":                                                            "FMK",
+    "Graphic Design":                                                   "FMK",
+    "Industrial Design":                                                "FMK",
+    "Jewellery Design":                                                 "FMK",
+    "Photography":                                                      "FMK",
+    "Product Design":                                                   "FMK",
+    "Shoe Design":                                                      "FMK",
+    "Spatial Design":                                                   "FMK",
 }
 
 # -----------------------------------------------------------------------
-# Pomocné lookup: skrátený normalizovaný kľúč  →  (plný_názov, faculty_id)
-# Generuje sa automaticky z DEPARTMENTS pri importe modulu.
+# WoS SKRATKY → (plný_názov_oddelenia, faculty_id)
+#
+# WoS skracuje názvy inštitúcií – toto je lookup tabuľka pre prevod
+# skrátených WoS názvov na plné anglické názvy.
+# Zoradené od dlhších k kratším, aby dlhší match mal prednosť.
+# -----------------------------------------------------------------------
+WOS_ABBREV_MAP: dict[str, tuple[str, str]] = {
+    # University Institute / Centre of Polymer Systems
+    "ctr polymer syst":         ("Centre of Polymer Systems",                                      "UI"),
+    "univ inst":                ("University Institute",                                            "UI"),
+    "inst nanomat adv technol & innovat": ("Centre of Polymer Systems",                            "UI"),
+
+    # FT – Faculty of Technology
+    "fac technol":              ("Faculty of Technology",                                           "FT"),
+    "dept polymer engn":        ("Department of Polymer Engineering",                               "FT"),
+    "dept polymer":             ("Department of Polymer Engineering",                               "FT"),
+    "dept phys & mat engn":     ("Department of Physics and Materials Engineering",                 "FT"),
+    "dept phys mat engn":       ("Department of Physics and Materials Engineering",                 "FT"),
+    "dept food anal & chem":    ("Department of Food Analysis and Chemistry",                       "FT"),
+    "dept food anal chem":      ("Department of Food Analysis and Chemistry",                       "FT"),
+    "dept food technol":        ("Department of Food Technology",                                   "FT"),
+    "dept food sci":            ("Department of Food Technology",                                   "FT"),
+    "dept fat surfactant & cosmet technol": ("Department of Fat, Surfactant and Cosmetics Technology", "FT"),
+    "dept fat surfactant cosmet technol":   ("Department of Fat, Surfactant and Cosmetics Technology", "FT"),
+    "dept environm protect engn": ("Department of Environmental Protection Engineering",            "FT"),
+    "dept environ protect engn":  ("Department of Environmental Protection Engineering",            "FT"),
+    "dept prod engn":           ("Department of Production Engineering",                            "FT"),
+    "dept chem":                ("Department of Chemistry",                                         "FT"),
+    "vavreckova":               ("Faculty of Technology",                                           "FT"),
+    "nam t g masaryka":         ("Faculty of Technology",                                           "FT"),
+    "nam tg masaryka":          ("Faculty of Technology",                                           "FT"),
+
+    # FAME – Faculty of Management and Economics
+    "fac management & econ":    ("Faculty of Management and Economics",                            "FAME"),
+    "fac management econ":      ("Faculty of Management and Economics",                            "FAME"),
+    "fac management":           ("Faculty of Management and Economics",                            "FAME"),
+    "fac econ":                 ("Faculty of Management and Economics",                            "FAME"),
+    "dept business adm":        ("Department of Business Administration",                          "FAME"),
+    "dept business":            ("Department of Business Administration",                          "FAME"),
+    "dept econ":                ("Department of Economics",                                        "FAME"),
+    "dept management":          ("Department of Management and Marketing",                         "FAME"),
+    "dept ind engn & inf syst": ("Department of Industrial Engineering and Information Systems",   "FAME"),
+    "dept stat":                ("Department of Statistics and Quantitative Methods",              "FAME"),
+    "ctr appl econ res":        ("Center for Applied Economic Research",                           "FAME"),
+    "mostni":                   ("Faculty of Management and Economics",                            "FAME"),
+    "mostni 5139":              ("Faculty of Management and Economics",                            "FAME"),
+
+    # FAI – Faculty of Applied Informatics
+    "fac appl informat":        ("Faculty of Applied Informatics",                                 "FAI"),
+    "dept informat & artificial intelligence": ("Department of Informatics and Artificial Intelligence", "FAI"),
+    "dept informat artif intelligen": ("Department of Informatics and Artificial Intelligence",    "FAI"),
+    "dept automat & control engn": ("Department of Automation and Control Engineering",            "FAI"),
+    "dept automat control engn":   ("Department of Automation and Control Engineering",            "FAI"),
+    "dept comp & commun syst":  ("Department of Computer and Communication Systems",               "FAI"),
+    "dept electron":            ("Department of Electronics and Measurements",                      "FAI"),
+    "dept secur engn":          ("Department of Security Engineering",                             "FAI"),
+    "dept math":                ("Department of Mathematics",                                       "FAI"),
+    "dept proc control":        ("Department of Process Control",                                   "FAI"),
+    "cebia":                    ("Centre for Security, Information and Advanced Technologies (CEBIA-Tech)", "FAI"),
+
+    # FLKR – Faculty of Logistics and Crisis Management
+    "fac logist":               ("Faculty of Logistics and Crisis Management",                     "FLKR"),
+    "dept logist":              ("Department of Logistics",                                        "FLKR"),
+    "dept crisis management":   ("Department of Crisis Management",                               "FLKR"),
+    "dept hlth care & populat": ("Department of Health Care and Population Protection",           "FLKR"),
+    "uherske hradiste":         ("Faculty of Logistics and Crisis Management",                     "FLKR"),
+
+    # FHS – Faculty of Humanities
+    "fac humanities":           ("Faculty of Humanities",                                          "FHS"),
+    "dept pedag sci":           ("Department of Pedagogical Sciences",                             "FHS"),
+    "dept mod languages":       ("Department of Modern Languages and Literatures",                 "FHS"),
+    "dept modern languages":    ("Department of Modern Languages and Literatures",                 "FHS"),
+    "language ctr":             ("Language Centre",                                                "FHS"),
+    "res ctr fhs":              ("Research Centre of FHS",                                         "FHS"),
+    "dept hlth care sci":       ("Department of Health Care Sciences",                             "FHS"),
+
+    # FMK – Faculty of Multimedia Communications
+    "fac multimedia":           ("Faculty of Multimedia Communications",                           "FMK"),
+    "dept marketing commun":    ("Department of Marketing Communications",                         "FMK"),
+    "dept theoret stud":        ("Department of Theoretical Studies",                              "FMK"),
+}
+
+# -----------------------------------------------------------------------
+# Normalizačné pomôcky
 # -----------------------------------------------------------------------
 import re as _re
 import unicodedata as _ud
@@ -145,36 +233,54 @@ def _norm(s: str) -> str:
     return _re.sub(r"\s+", " ", ascii_.lower()).strip()
 
 
-# Primárny slovník: normalizovaný plný názov → (plný_názov, faculty_id)
+# Normalizovaný WOS_ABBREV_MAP pre rýchle vyhľadávanie
+WOS_ABBREV_NORM: dict[str, tuple[str, str]] = {
+    _norm(k): v for k, v in WOS_ABBREV_MAP.items()
+}
+
+# Primárny slovník plných názvov: norm → (plný_názov, faculty_id)
 DEPT_NORM_MAP: dict[str, tuple[str, str]] = {
     _norm(dept): (dept, fid)
     for dept, fid in DEPARTMENTS.items()
 }
 
-# Kľúčové slová skrátené pre heuristické vyhľadávanie v texte afiliácie
-# Každý záznam: normalizované_kľúčové_slovo → (plný_názov, faculty_id)
+# Kombinovaný keyword map: WoS skratky + plné názvy oddelení
 DEPT_KEYWORD_MAP: dict[str, tuple[str, str]] = {}
-for _dept, _fid in DEPARTMENTS.items():
-    _key = _norm(_dept)
-    DEPT_KEYWORD_MAP[_key] = (_dept, _fid)
-    # Pridaj aj verziu bez prvého slova (napr. "Dept " / "Department ")
-    _words = _key.split()
-    if len(_words) > 2:
-        _short = " ".join(_words[1:])       # bez "department" / "dept"
-        if _short not in DEPT_KEYWORD_MAP:
-            DEPT_KEYWORD_MAP[_short] = (_dept, _fid)
 
-# Kľúčové slová fakúlt pre heuristický fallback (keď oddelenie nenájdeme)
-# Formát:  zoznam kľúčových slov  →  faculty_id
+# Najprv pridaj WoS skratky (kratšie, ale špecifické)
+for k, v in WOS_ABBREV_NORM.items():
+    DEPT_KEYWORD_MAP[k] = v
+
+# Potom plné názvy oddelení (normalizované) – majú prednosť pri rovnakej dĺžke
+for dept, fid in DEPARTMENTS.items():
+    key = _norm(dept)
+    DEPT_KEYWORD_MAP[key] = (dept, fid)
+    # Verzia bez prvého slova "department" / "centre" / "center"
+    words = key.split()
+    if len(words) > 2:
+        short = " ".join(words[1:])
+        if short not in DEPT_KEYWORD_MAP:
+            DEPT_KEYWORD_MAP[short] = (dept, fid)
+
+# -----------------------------------------------------------------------
+# Fallback pravidlá pre fakultu (keď nepoznáme konkrétne oddelenie)
+# Zoradené od najšpecifickejších k najvšeobecnejším.
+# -----------------------------------------------------------------------
 FACULTY_KEYWORD_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (
+        ("ctr polymer syst", "univ inst", "polymer syst",
+         "inst nanomat"),
+        "UI",
+    ),
+    (
         ("fac technol", "dept polymer", "dept chem", "dept food",
-         "dept phys", "polymer engn", "vavreckova", "nam t g masaryka"),
+         "dept phys", "polymer engn", "vavreckova", "nam t g masaryka",
+         "nam tg masaryka", "dept environ"),
         "FT",
     ),
     (
         ("fac management", "fac econ", "dept business", "dept econ",
-         "dept management", "dept financ", "mostni", "mostni 5139"),
+         "dept management", "dept financ", "mostni", "ctr appl econ"),
         "FAME",
     ),
     (
@@ -184,13 +290,13 @@ FACULTY_KEYWORD_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
         "FAI",
     ),
     (
-        ("fac logist", "crisis management", "logist",
-         "uherske hradiste", "dept logist"),
+        ("fac logist", "crisis management", "dept logist",
+         "uherske hradiste", "dept hlth care & populat"),
         "FLKR",
     ),
     (
-        ("fac humanities", "dept pedag", "dept hlth", "dept lang",
-         "language centre", "humanities"),
+        ("fac humanities", "dept pedag", "dept hlth care sci",
+         "dept lang", "language ctr", "res ctr fhs"),
         "FHS",
     ),
     (
