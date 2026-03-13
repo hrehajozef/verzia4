@@ -1,7 +1,10 @@
 {
   "permissions": {
     "allow": [
-      "Bash(.venv/Scripts/python.exe:*)"
+      "Bash(.venv/Scripts/python.exe:*)",
+      "Bash(python3:*)",
+      "Read(//c/Users/jozef/AppData/Local/Programs/Python/Python314/Scripts/**)",
+      "Read(//c/Users/jozef/AppData/Local/Programs/Python//**)"
     ]
   }
 }
