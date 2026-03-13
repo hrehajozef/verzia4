@@ -6,23 +6,23 @@ na doriešenie nejednoznačných prípadov.
 
 ## Čo projekt robí
 
-| Príkaz | Popis |
-|---|---|
-| `bootstrap` | Skopíruje remote tabuľku do lokálnej DB |
-| `import-authors` | Nahrajú interných UTB autorov z CSV do `utb_internal_authors` |
-| `validate-setup` | Pridá validačné stĺpce (raz pred prvou validáciou) |
-| `validate` | Kontroluje kvalitu metadát (trailing spaces, mojibake, DOI, …) |
-| `dates-setup` | Pridá dátumové stĺpce (raz pred prvým spracovaním dátumov) |
-| `heuristics` | Heuristicky nájde interných autorov z WoS/DC afiliácií |
-| `dates` | Heuristicky parsuje dátumy z `utb.fulltext.dates` |
-| `llm` | LLM spracovanie autorov pre záznamy s `needs_llm=TRUE` |
-| `dates-llm` | LLM spracovanie dátumov pre záznamy s `date_needs_llm=TRUE` |
-| `deduplicate` | Identifikácia a označenie duplikátov |
-| `status` | Štatistiky autorov a LLM fázy |
-| `dates-status` | Štatistiky dátumov |
-| `validate-status` | Štatistiky validácie |
-| `dedup-status` | Štatistiky deduplikácie |
-| `export` | Export výsledkov do CSV |
+| Príkaz              | Popis |
+|---------------------|---|
+| `bootstrap`         | Skopíruje remote tabuľku do lokálnej DB |
+| `import-authors`    | Nahrajú interných UTB autorov z CSV do `utb_internal_authors` |
+| `validate-setup`    | Pridá validačné stĺpce (raz pred prvou validáciou) |
+| `validate`          | Kontroluje kvalitu metadát (trailing spaces, mojibake, DOI, …) |
+| `dates-setup`       | Pridá dátumové stĺpce (raz pred prvým spracovaním dátumov) |
+| `heuristics`        | Heuristicky nájde interných autorov z WoS/DC afiliácií |
+| `dates`             | Heuristicky parsuje dátumy z `utb.fulltext.dates` |
+| `heuristics-llm`    | LLM spracovanie autorov pre záznamy s `needs_llm=TRUE` |
+| `dates-llm`         | LLM spracovanie dátumov pre záznamy s `date_needs_llm=TRUE` |
+| `deduplicate`       | Identifikácia a označenie duplikátov |
+| `heuristics-status` | Štatistiky autorov a LLM fázy |
+| `dates-status`      | Štatistiky dátumov |
+| `validate-status`   | Štatistiky validácie |
+| `dedup-status`      | Štatistiky deduplikácie |
+| `export`            | Export výsledkov do CSV |
 
 ## Požiadavky
 
@@ -130,8 +130,8 @@ uv run python -m src.cli dates
 ### 7. LLM fáza – autori
 
 ```bash
-uv run python -m src.cli llm
-uv run python -m src.cli llm --provider openai --limit 100
+uv run python -m src.cli heuristics-llm
+uv run python -m src.cli heuristics-llm --provider openai --limit 100
 ```
 
 ### 8. LLM fáza – dátumy
@@ -161,7 +161,7 @@ uv run python -m src.cli deduplicate --by dc.title --no-fuzzy --dry-run
 ### 10. Štatistiky a export
 
 ```bash
-uv run python -m src.cli status
+uv run python -m src.cli heuristics-status
 uv run python -m src.cli dates-status
 uv run python -m src.cli validate-status
 uv run python -m src.cli dedup-status
