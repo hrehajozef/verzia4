@@ -1,7 +1,7 @@
 [project]
 name = "utb-metadata-pipeline"
 version = "1.0.0"
-description = "Pipeline na spracovanie afiliácií UTB"
+description = "Pipeline na spracovanie afiliácií publikácií UTB"
 requires-python = ">=3.11"
 dependencies = [
     "typer>=0.9.0",
@@ -13,5 +13,27 @@ dependencies = [
     "jellyfish>=1.0.3",
 ]
 
+[project.scripts]
+utb-pipeline = "src.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest>=8.0",
+    "pytest-asyncio>=0.23",
+]
+
 [tool.uv]
 managed = true
+package = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+pythonpath = ["."]
+filterwarnings = [
+    "ignore::DeprecationWarning:sqlalchemy",
+    "ignore::DeprecationWarning:psycopg",
+]

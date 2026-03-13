@@ -150,8 +150,8 @@ def validate_status() -> None:
 # HEURISTIKY – AUTORI
 # ═══════════════════════════════════════════════════════════════════════
 
-@app.command()
-def heuristics(
+@app.command(name="heuristics")
+def heuristics_run(
     limit:            int        = typer.Option(0,     "--limit",            help="Max počet záznamov (0 = všetky)."),
     batch_size:       int | None = typer.Option(None,  "--batch-size",       help="Veľkosť dávky."),
     reprocess_errors: bool       = typer.Option(False, "--reprocess-errors", help="Spracovať aj záznamy so statusom error."),
@@ -162,8 +162,8 @@ def heuristics(
     run_heuristics(batch_size=batch_size, limit=limit, reprocess_errors=reprocess_errors, normalize=normalize)
 
 
-@app.command()
-def llm(
+@app.command(name="heuristics-llm")
+def heuristics_llm(
     limit:      int        = typer.Option(0,    "--limit",      help="Max počet záznamov (0 = všetky)."),
     batch_size: int | None = typer.Option(None, "--batch-size", help="Veľkosť dávky."),
     provider:   str | None = typer.Option(None, "--provider",   help="ollama alebo openai."),
@@ -173,7 +173,7 @@ def llm(
     run_llm(batch_size=batch_size, limit=limit, provider=provider)
 
 
-@app.command()
+@app.command(name="heuristics-status")
 def status() -> None:
     """Štatistiky spracovania mien a afiliácií."""
     engine = get_local_engine()

@@ -1,146 +1,188 @@
 # UTB Metadata Pipeline
 
-Pipeline pre spracovanie afiliácií publikácií UTB. Projekt má dve hlavné fázy:
-1. heuristiky nad WoS afiliáciou,
-2. voliteľná LLM kontrola nejednoznačných záznamov.
-
-Kód je pripravený ako modulárny backend. CLI používa rovnaké služby, ktoré sa dajú priamo volať aj z budúcej Flask aplikácie.
+Pipeline na spracovanie metadát publikácií UTB. Identifikuje interných autorov,
+parsuje dátumy, validuje záznamy a deduplikuje výstup. Voliteľne využíva LLM
+na doriešenie nejednoznačných prípadov.
 
 ## Čo projekt robí
 
-- `bootstrap` skopíruje remote tabuľku do lokálnej DB a doplní výstupné stĺpce.
-- `import-authors` nahrá interných UTB autorov z CSV do tabuľky `utb_internal_authors`.
-- `heuristics` spracuje `utb.wos.affiliation`, nájde interných autorov, fakultu, OÚ a nastaví `needs_llm`.
-- `llm` spracuje záznamy s `needs_llm=true` a uloží validovaný JSON výstup.
-- `status` zobrazí priebežné štatistiky.
-- `export` vyexportuje výsledky do CSV.
+| Príkaz | Popis |
+|---|---|
+| `bootstrap` | Skopíruje remote tabuľku do lokálnej DB |
+| `import-authors` | Nahrajú interných UTB autorov z CSV do `utb_internal_authors` |
+| `validate-setup` | Pridá validačné stĺpce (raz pred prvou validáciou) |
+| `validate` | Kontroluje kvalitu metadát (trailing spaces, mojibake, DOI, …) |
+| `dates-setup` | Pridá dátumové stĺpce (raz pred prvým spracovaním dátumov) |
+| `heuristics` | Heuristicky nájde interných autorov z WoS/DC afiliácií |
+| `dates` | Heuristicky parsuje dátumy z `utb.fulltext.dates` |
+| `llm` | LLM spracovanie autorov pre záznamy s `needs_llm=TRUE` |
+| `dates-llm` | LLM spracovanie dátumov pre záznamy s `date_needs_llm=TRUE` |
+| `deduplicate` | Identifikácia a označenie duplikátov |
+| `status` | Štatistiky autorov a LLM fázy |
+| `dates-status` | Štatistiky dátumov |
+| `validate-status` | Štatistiky validácie |
+| `dedup-status` | Štatistiky deduplikácie |
+| `export` | Export výsledkov do CSV |
 
 ## Požiadavky
 
 - Python 3.11+
-- PostgreSQL 14+
-- Prístup na remote DB `publikace.k.utb.cz` (read-only účet)
-- Voliteľne Ollama alebo OpenAI kompatibilné API
+- [uv](https://docs.astral.sh/uv/) (správca závislostí)
+- PostgreSQL 14+ (lokálna DB)
+- Prístup na remote DB `publikace.k.utb.cz` (read-only, len pre `bootstrap`)
+- Voliteľne: Ollama alebo OpenAI-kompatibilné API
 
 ## Inštalácia
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
+# 1. Nainštaluj závislosti (vrátane dev)
+uv sync --all-groups
+
+# 2. Vytvor .env zo šablóny
 cp .env.example .env
-```
-
-Na Windows PowerShell:
-
-```powershell
-python -m venv .venv
-.venv\Scripts\Activate.ps1
-pip install -r requirements.txt
-copy .env.example .env
+# Uprav .env – nastav DB prihlasovacie údaje
 ```
 
 ## Nastavenie `.env`
 
-V `.env` nastav minimálne:
+Nastav minimálne:
 
-- remote DB prístup (`REMOTE_DB_*`),
-- local DB prístup (`LOCAL_DB_*`),
-- tabuľky (`REMOTE_SCHEMA`, `REMOTE_TABLE`, `LOCAL_SCHEMA`, `LOCAL_TABLE`),
-- heuristické a LLM parametre podľa potreby.
+- `LOCAL_DB_*` – pripojenie k lokálnej PostgreSQL
+- `REMOTE_DB_*` – pripojenie k remote DB (len pre `bootstrap`)
+- `LOCAL_SCHEMA`, `LOCAL_TABLE` – cieľová lokálna tabuľka
+- `REMOTE_SCHEMA`, `REMOTE_TABLE` – zdrojová remote tabuľka
 
 Nikdy necommituj reálne heslá ani API kľúče.
 
-## Vytvorenie lokálneho DB používateľa a databázy
+## Vytvorenie lokálnej DB
 
-Príklad pre lokálny PostgreSQL:
-
-```bash
-psql -U postgres -h 127.0.0.1 -p 5432 <<'SQL'
+```sql
+-- spusti v psql ako postgres superuser
 CREATE USER veda_local_user WITH PASSWORD 'veda_local_pass';
 CREATE DATABASE veda_local OWNER veda_local_user;
 GRANT ALL PRIVILEGES ON DATABASE veda_local TO veda_local_user;
-SQL
 ```
-
-Potom zosúlaď `LOCAL_DB_USER`, `LOCAL_DB_PASSWORD`, `LOCAL_DB_NAME` v `.env`.
 
 ## Spustenie pipeline
 
-### 1) Bootstrap lokálnej tabuľky
+Odporúčané poradie príkazov:
+
+### 1. Bootstrap
 
 ```bash
-python -m src.cli bootstrap
+uv run python -m src.cli bootstrap
 ```
 
-Bezpečný režim je default. Ak tabuľka existuje, doplnia sa chýbajúce stĺpce a existujúce dáta sa ponechajú.
-
-Nútený rebuild:
+Nútený rebuild (zmaže a znovu skopíruje):
 
 ```bash
-python -m src.cli bootstrap --drop
+uv run python -m src.cli bootstrap --drop
 ```
 
-Tento režim zmaže lokálnu tabuľku a skopíruje dáta od začiatku.
-
-### 2) Import interných autorov
+### 2. Import interných autorov
 
 ```bash
-python -m src.cli import-authors --csv autori_utb_oficial_utf8.csv
+uv run python -m src.cli import-authors
+# alebo s vlastným súborom:
+uv run python -m src.cli import-authors --csv data/autori_utb_oficial_utf8.csv
 ```
 
-### 3) Heuristiky
+Formát CSV: `priezvisko;krstné_meno`, s hlavičkou, 1 riadok = 1 osoba.
+
+### 3. Validácia (jednorazový setup + spustenie)
 
 ```bash
-python -m src.cli heuristics
+uv run python -m src.cli validate-setup
+uv run python -m src.cli validate
 ```
 
-Obmedzenie počtu záznamov:
+### 4. Príprava dátumových stĺpcov (jednorazovo)
 
 ```bash
-python -m src.cli heuristics --limit 500 --batch-size 200
+uv run python -m src.cli dates-setup
 ```
 
-Opakované spracovanie chýb:
+### 5. Heuristiky – autori
 
 ```bash
-python -m src.cli heuristics --reprocess-errors
+uv run python -m src.cli heuristics
 ```
 
-### 4) LLM fáza
+Voliteľné prepínače:
 
 ```bash
-python -m src.cli llm
+# Porovnávať mená aj na normalizovaných hodnotách (bez diakritiky) + fuzzy matching
+uv run python -m src.cli heuristics --normalize
+
+# Limit a veľkosť dávky
+uv run python -m src.cli heuristics --limit 500 --batch-size 200
+
+# Spracovať aj záznamy so statusom error
+uv run python -m src.cli heuristics --reprocess-errors
 ```
 
-Prepnutie providera:
+### 6. Heuristiky – dátumy
 
 ```bash
-python -m src.cli llm --provider openai --limit 100
+uv run python -m src.cli dates
 ```
 
-### 5) Stav a export
+### 7. LLM fáza – autori
 
 ```bash
-python -m src.cli status
-python -m src.cli export --output vysledky_export.csv
+uv run python -m src.cli llm
+uv run python -m src.cli llm --provider openai --limit 100
+```
+
+### 8. LLM fáza – dátumy
+
+```bash
+uv run python -m src.cli dates-llm
+```
+
+Voliteľné prepínače:
+
+```bash
+# Spracovať aj záznamy kde utb.fulltext.dates = '{-}' (štandardne preskočené)
+uv run python -m src.cli dates-llm --include-dash
+
+# Znovu spracovať záznamy s chybou
+uv run python -m src.cli dates-llm --reprocess
+```
+
+### 9. Deduplikácia
+
+```bash
+uv run python -m src.cli deduplicate
+uv run python -m src.cli deduplicate --by dc.identifier.doi
+uv run python -m src.cli deduplicate --by dc.title --no-fuzzy --dry-run
+```
+
+### 10. Štatistiky a export
+
+```bash
+uv run python -m src.cli status
+uv run python -m src.cli dates-status
+uv run python -m src.cli validate-status
+uv run python -m src.cli dedup-status
+
+uv run python -m src.cli export --output data/vysledky_export.csv
 ```
 
 ## Testy
 
 ```bash
-pytest
+uv run pytest
 ```
+
+## Ako funguje porovnávanie autorov
+
+Predvolene sa mená porovnávajú na **surových hodnotách** (presná zhoda s diakritikou, potom fuzzy na surových reťazcoch). Prepínač `--normalize` zapína navyše normalizovanú zhodu (lowercase, bez diakritiky) a fuzzy na normalizovaných menách – vhodné pre datasety kde chýba diakritika (napr. WoS).
 
 ## Troubleshooting
 
-- `connection refused` na local DB: skontroluj, že beží PostgreSQL a správny host/port v `.env`.
-- Chyba pri remote DB: over firewall/VPN a remote prihlasovacie údaje.
-- `llm_status=error`: skontroluj `LLM_PROVIDER`, endpoint, API key a timeout.
-- Pomalé heuristiky: zvýš `HEURISTICS_BATCH_SIZE` postupne podľa výkonu DB.
-
-## Breaking changes
-
-- Žiadne CLI príkazy neboli odstránené.
-- `export` používa stĺpce `utb_faculty` a `utb_ou` (predtým bol v kóde chybný odkaz na `utb_faculty_guess`).
-
+- **`connection refused` na local DB** – skontroluj, že beží PostgreSQL a správny host/port v `.env`
+- **Chyba pri remote DB** – over firewall/VPN a remote prihlasovacie údaje (potrebné len pre `bootstrap`)
+- **`llm_status=error`** – skontroluj `LLM_PROVIDER`, endpoint, API kľúč a timeout
+- **Pomalé heuristiky** – zvýš `HEURISTICS_BATCH_SIZE` v `.env`
+- **Import autorov: menej záznamov ako riadkov v CSV** – normálne chovanie, CSV obsahuje duplikáty (rovnaké meno viackrát), ktoré sa deduplikujú
