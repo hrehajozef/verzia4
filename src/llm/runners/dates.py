@@ -81,21 +81,24 @@ def process_date_llm_record(
 # -----------------------------------------------------------------------
 
 def run_date_llm(
-    engine:     Engine | None = None,
-    batch_size: int | None    = None,
-    limit:      int           = 0,
-    provider:   str | None    = None,
-    reprocess:  bool          = False,
+    engine:        Engine | None = None,
+    batch_size:    int | None    = None,
+    limit:         int           = 0,
+    provider:      str | None    = None,
+    reprocess:     bool          = False,
+    include_dash:  bool          = False,
 ) -> None:
     """
     Spustí LLM parsovanie dátumov pre záznamy s date_needs_llm=TRUE.
 
     Args:
-        engine:     SQLAlchemy engine (použije lokálny ak None).
-        batch_size: Veľkosť dávky.
-        limit:      Max počet záznamov (0 = všetky).
-        provider:   LLM provider (ollama / openai).
-        reprocess:  Ak True, spracuje aj záznamy s chybou.
+        engine:       SQLAlchemy engine (použije lokálny ak None).
+        batch_size:   Veľkosť dávky.
+        limit:        Max počet záznamov (0 = všetky).
+        provider:     LLM provider (ollama / openai).
+        reprocess:    Ak True, spracuje aj záznamy s chybou.
+        include_dash: Ak True, spracuje aj záznamy kde utb.fulltext.dates = '{-}'.
+                      Štandardne (False) sa tieto záznamy preskakujú.
     """
     engine     = engine     or get_local_engine()
     batch_size = batch_size or settings.llm_batch_size
@@ -110,12 +113,15 @@ def run_date_llm(
         statuses.append("error")
         statuses.append("validation_error")
 
+    dash_filter = "" if include_dash else "AND (\"utb.fulltext.dates\"[1] IS NULL OR \"utb.fulltext.dates\"[1] != '{-}')"
+
     with engine.connect() as conn:
         total = conn.execute(
             text(f"""
                 SELECT COUNT(*) FROM "{schema}"."{table}"
                 WHERE date_needs_llm = TRUE
                   AND date_llm_status = ANY(:s)
+                  {dash_filter}
             """),
             {"s": statuses},
         ).scalar_one()
@@ -145,6 +151,7 @@ def run_date_llm(
                     FROM "{schema}"."{table}"
                     WHERE date_needs_llm = TRUE
                       AND date_llm_status = ANY(:s)
+                      {dash_filter}
                     ORDER BY resource_id
                     LIMIT :lim
                 """),

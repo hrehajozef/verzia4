@@ -11,7 +11,7 @@ from pydantic import ValidationError
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from src.authors.internal import InternalAuthor, get_author_registry
+from src.authors.internal import InternalAuthor, _normalize_name, get_author_registry
 from src.common.constants import LLMStatus
 from src.config.settings import settings
 from src.db.engines import get_local_engine
@@ -40,7 +40,7 @@ def _select_candidates(
         wos_surname = norm_wos.split(",")[0].strip().split()[0] if norm_wos else ""
 
         for author in registry:
-            norm_auth    = author.norm_name
+            norm_auth    = _normalize_name(author.full_name)
             auth_surname = norm_auth.split(",")[0].strip().split()[0] if norm_auth else ""
 
             if wos_surname and auth_surname:

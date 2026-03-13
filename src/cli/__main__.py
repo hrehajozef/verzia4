@@ -64,52 +64,44 @@ def bootstrap(
 
 @app.command(name="import-authors")
 def import_authors(
-    source: str = typer.Option(
-        "remote", "--source",
-        help="Zdroj autorov: 'remote' (školská DB) alebo 'csv' (súbor).",
-    ),
     csv_file: Path = typer.Option(
         Path("./data/autori_utb_oficial_utf8.csv"), "--csv",
-        help="CSV súbor (použije sa len ak --source=csv).",
+        help="CSV súbor s internými autormi (surname;firstname, s hlavičkou).",
     ),
 ) -> None:
     """
-    Import interných autorov do lokálnej tabuľky utb_internal_authors.
+    Import interných autorov z CSV do lokálnej tabuľky utb_internal_authors.
 
-    Príklady:
-      python -m src.cli import-authors               # z remote DB (default)
-      python -m src.cli import-authors --source csv --csv autori.csv
+    Formát CSV: priezvisko;krstné_meno, 1 riadok = 1 osoba, s hlavičkou.
+
+    Príklad:
+      python -m src.cli import-authors
+      python -m src.cli import-authors --csv data/autori_utb_oficial_utf8.csv
+
+    Poznámka: import z remote DB (obd_prac / S_LIDE) je zatiaľ zakomentovaný
+    v src/authors/internal.py – reaktivovať keď budú tabuľky dostupné.
     """
     from src.authors.internal import (
         clear_author_registry_cache,
         import_authors_to_db,
         load_authors_from_csv,
-        load_authors_from_remote_db,
         setup_authors_table,
     )
+
+    if not csv_file.exists():
+        typer.echo(f"[CHYBA] CSV súbor neexistuje: {csv_file}", err=True)
+        raise typer.Exit(1)
 
     engine = get_local_engine()
     setup_authors_table(engine)
 
-    if source.lower() == "csv":
-        if not csv_file.exists():
-            typer.echo(f"[CHYBA] CSV súbor neexistuje: {csv_file}", err=True)
-            raise typer.Exit(1)
-        typer.echo(f"Načítavam autorov z CSV: {csv_file}")
-        authors = load_authors_from_csv(csv_file)
-    else:
-        typer.echo("Načítavam autorov zo školskej remote DB (obd_prac / S_LIDE)...")
-        if not test_connection(get_remote_engine(), "Remote DB"):
-            raise typer.Exit(1)
-        authors = load_authors_from_remote_db(get_remote_engine())
+    typer.echo(f"Načítavam autorov z CSV: {csv_file}")
+    authors = load_authors_from_csv(csv_file)
 
     count = import_authors_to_db(authors, engine)
     clear_author_registry_cache()
 
-    with_workplace = sum(1 for a in authors if a.parent_name)
     typer.echo(f"[OK] Importovaných záznamov: {count}")
-    typer.echo(f"     Z toho s pracoviskom:   {with_workplace}")
-    typer.echo(f"     Bez pracoviska:         {count - with_workplace}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -163,10 +155,11 @@ def heuristics(
     limit:            int        = typer.Option(0,     "--limit",            help="Max počet záznamov (0 = všetky)."),
     batch_size:       int | None = typer.Option(None,  "--batch-size",       help="Veľkosť dávky."),
     reprocess_errors: bool       = typer.Option(False, "--reprocess-errors", help="Spracovať aj záznamy so statusom error."),
+    normalize:        bool       = typer.Option(False, "--normalize",        help="Porovnávať mená aj na normalizovaných hodnotách (bez diakritiky, lowercase) + fuzzy. Štandardne vypnuté – porovnáva sa na surových hodnotách."),
 ) -> None:
     """Heuristické spracovanie mien a afiliácií autorov."""
     from src.heuristics.authors import run_heuristics
-    run_heuristics(batch_size=batch_size, limit=limit, reprocess_errors=reprocess_errors)
+    run_heuristics(batch_size=batch_size, limit=limit, reprocess_errors=reprocess_errors, normalize=normalize)
 
 
 @app.command()
@@ -246,14 +239,15 @@ def dates_run(
 
 @app.command(name="dates-llm")
 def dates_llm(
-    limit:      int        = typer.Option(0,    "--limit",      help="Max počet záznamov (0 = všetky)."),
-    batch_size: int | None = typer.Option(None, "--batch-size", help="Veľkosť dávky."),
-    provider:   str | None = typer.Option(None, "--provider",   help="ollama alebo openai."),
-    reprocess:  bool       = typer.Option(False, "--reprocess", help="Spracovať aj záznamy s chybou."),
+    limit:         int        = typer.Option(0,    "--limit",         help="Max počet záznamov (0 = všetky)."),
+    batch_size:    int | None = typer.Option(None, "--batch-size",    help="Veľkosť dávky."),
+    provider:      str | None = typer.Option(None, "--provider",      help="ollama alebo openai."),
+    reprocess:     bool       = typer.Option(False, "--reprocess",    help="Spracovať aj záznamy s chybou."),
+    include_dash:  bool       = typer.Option(False, "--include-dash", help="Spracovať aj záznamy kde utb.fulltext.dates = '{-}'. Štandardne preskočené."),
 ) -> None:
     """LLM spracovanie dátumov (záznamy s date_needs_llm=TRUE, po dates heuristikách)."""
     from src.llm.runners.dates import run_date_llm
-    run_date_llm(batch_size=batch_size, limit=limit, provider=provider, reprocess=reprocess)
+    run_date_llm(batch_size=batch_size, limit=limit, provider=provider, reprocess=reprocess, include_dash=include_dash)
 
 
 @app.command(name="dates-status")
@@ -359,7 +353,6 @@ def export(
 
 def main() -> None:
     app()
-
 
 if __name__ == "__main__":
     main()

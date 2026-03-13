@@ -69,20 +69,25 @@ def resolve_faculty_and_ou(affiliation_text: str) -> tuple[str, str]:
     return "", ""
 
 
-def _faculty_from_registry(author: InternalAuthor) -> str:
-    faculty_keywords = ("fakult", "faculty", "ustav", "institute", "logist", "humanit", "multimedia")
-    if author.parent_name and any(kw in author.parent_name.lower() for kw in faculty_keywords):
-        return author.parent_name
-    if author.workplace_name and any(kw in author.workplace_name.lower() for kw in faculty_keywords):
-        return author.workplace_name
-    return author.parent_name or author.workplace_name or ""
+# -----------------------------------------------------------------------
+# Pomocné funkcie pre získanie fakulty a OU z registra – zatiaľ zakomentované.
+# Budú reaktivované keď budú k dispozícii údaje o pracoviskách z remote DB.
+# -----------------------------------------------------------------------
+
+# def _faculty_from_registry(author: InternalAuthor) -> str:
+#     faculty_keywords = ("fakult", "faculty", "ustav", "institute", "logist", "humanit", "multimedia")
+#     if author.parent_name and any(kw in author.parent_name.lower() for kw in faculty_keywords):
+#         return author.parent_name
+#     if author.workplace_name and any(kw in author.workplace_name.lower() for kw in faculty_keywords):
+#         return author.workplace_name
+#     return author.parent_name or author.workplace_name or ""
 
 
-def _ou_from_registry(author: InternalAuthor) -> str:
-    faculty_keywords = ("fakult", "faculty", "univers", "rektora")
-    if author.workplace_name and not any(kw in author.workplace_name.lower() for kw in faculty_keywords):
-        return author.workplace_name
-    return ""
+# def _ou_from_registry(author: InternalAuthor) -> str:
+#     faculty_keywords = ("fakult", "faculty", "univers", "rektora")
+#     if author.workplace_name and not any(kw in author.workplace_name.lower() for kw in faculty_keywords):
+#         return author.workplace_name
+#     return ""
 
 
 # -----------------------------------------------------------------------
@@ -94,6 +99,7 @@ def process_record(
     wos_aff_arr:     list[str] | None,
     dc_authors_arr:  list[str] | None,
     registry:        list[InternalAuthor],
+    normalize:       bool = False,
 ) -> dict:
 
     result: dict = {
@@ -141,11 +147,13 @@ def process_record(
                             continue
                         seen_authors.add(norm_author)
 
-                        m = match_author(author_str, registry, settings.author_match_threshold)
+                        m = match_author(author_str, registry, settings.author_match_threshold, normalize=normalize)
                         if m.matched and m.author:
                             matched_authors.append(m.author.full_name)
-                            faculty = wos_faculty or _faculty_from_registry(m.author)
-                            ou      = wos_ou      or _ou_from_registry(m.author)
+                            faculty = wos_faculty
+                            # faculty = wos_faculty or _faculty_from_registry(m.author)  # TODO: enable when workplace data available
+                            ou      = wos_ou
+                            # ou = wos_ou or _ou_from_registry(m.author)  # TODO: enable when workplace data available
                             matched_faculties.append(faculty)
                             matched_ous.append(ou)
                         else:
@@ -188,17 +196,19 @@ def process_record(
                     continue
                 seen_authors.add(norm_author)
 
-                m = match_author(author_str, registry, settings.author_match_threshold)
+                m = match_author(author_str, registry, settings.author_match_threshold, normalize=normalize)
                 if m.matched and m.author:
                     matched_authors.append(m.author.full_name)
-                    matched_faculties.append(_faculty_from_registry(m.author))
-                    matched_ous.append(_ou_from_registry(m.author))
+                    matched_faculties.append("")
+                    # matched_faculties.append(_faculty_from_registry(m.author))  # TODO: enable when workplace data available
+                    matched_ous.append("")
+                    # matched_ous.append(_ou_from_registry(m.author))  # TODO: enable when workplace data available
 
             result.update({
                 "heuristic_status":               HeuristicStatus.PROCESSED,
-                "needs_llm": any(
-                    not f for f in matched_faculties
-                ) if matched_authors else False,
+                # needs_llm: keď budú k dispozícii údaje o pracovisku, obnov pôvodnú logiku:
+                # "needs_llm": any(not f for f in matched_faculties) if matched_authors else False,
+                "needs_llm": False,
                 "utb_contributor_internalauthor": matched_authors or None,
                 "utb_faculty": list(dict.fromkeys(filter(None, matched_faculties))) or None,
                 "utb_ou":      list(dict.fromkeys(filter(None, matched_ous)))       or None,
@@ -219,13 +229,14 @@ def process_record(
 # Dávkové spracovanie
 # -----------------------------------------------------------------------
 
-def process_batch(rows: list, registry: list[InternalAuthor]) -> list[dict]:
+def process_batch(rows: list, registry: list[InternalAuthor], normalize: bool = False) -> list[dict]:
     return [
         process_record(
             resource_id    = row.resource_id,
             wos_aff_arr    = row.wos_aff,
             dc_authors_arr = row.dc_authors,
             registry       = registry,
+            normalize      = normalize,
         )
         for row in rows
     ]
@@ -236,6 +247,7 @@ def run_heuristics(
     batch_size:       int | None    = None,
     limit:            int           = 0,
     reprocess_errors: bool          = False,
+    normalize:        bool          = False,
 ) -> None:
     engine     = engine or get_local_engine()
     batch_size = batch_size or settings.heuristics_batch_size
@@ -283,7 +295,7 @@ def run_heuristics(
         if not rows:
             break
 
-        updates = process_batch(rows, registry)
+        updates = process_batch(rows, registry, normalize=normalize)
 
         update_sql = f"""
             UPDATE "{schema}"."{table}"
