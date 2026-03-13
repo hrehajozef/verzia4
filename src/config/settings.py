@@ -8,7 +8,7 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv(Path(__file__).resolve().parents[0] / ".env")
+load_dotenv(Path(__file__).resolve().parents[2] / ".env") # Načítanie .env z koreňového adresára projektu
 
 
 DEFAULT_UTB_KEYWORDS = [
@@ -85,6 +85,10 @@ class Settings:
     )
     heuristics_batch_size: int = field(
         default_factory=lambda: _get_int("HEURISTICS_BATCH_SIZE", 200)
+    )
+
+    fuzzy_dedup_threshold: float = field(
+        default_factory=lambda: _get_float("FUZZY_DEDUP_THRESHOLD", 0.85)
     )
 
     llm_provider: str = field(default_factory=lambda: _get_str("LLM_PROVIDER"))

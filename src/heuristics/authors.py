@@ -1,4 +1,4 @@
-"""Heuristický runner – spracuje záznamy z lokálnej DB tabuľky.
+"""Heuristický runner pre mená autorov a afiliácie.
 
 Stratégie:
   A) Má WoS afiliáciu → parsuj WoS bloky, matchuj autorov z UTB blokov.
@@ -70,28 +70,16 @@ def resolve_faculty_and_ou(affiliation_text: str) -> tuple[str, str]:
 
 
 def _faculty_from_registry(author: InternalAuthor) -> str:
-    """
-    Vráti názov fakulty z registra.
-    parent_name = nadradené pracovisko (zvyčajne fakulta alebo UTB celá).
-    Ak parent_name nie je fakulta (napr. "Rektorát"), vráti workplace_name.
-    """
-    # Preferuj parent_name ak obsahuje slovo "fakulta" / "faculty" / "ústav" / "institute"
     faculty_keywords = ("fakult", "faculty", "ustav", "institute", "logist", "humanit", "multimedia")
     if author.parent_name and any(kw in author.parent_name.lower() for kw in faculty_keywords):
         return author.parent_name
     if author.workplace_name and any(kw in author.workplace_name.lower() for kw in faculty_keywords):
         return author.workplace_name
-    # Fallback: vráť parent ak existuje, inak workplace
     return author.parent_name or author.workplace_name or ""
 
 
 def _ou_from_registry(author: InternalAuthor) -> str:
-    """
-    Vráti názov oddelenia/pracoviska z registra.
-    workplace_name je konkrétnejšie oddelenie (nie fakulta).
-    """
     faculty_keywords = ("fakult", "faculty", "univers", "rektora")
-    # Ak workplace je samotná fakulta (nie oddelenie), nevraciaj ho ako OU
     if author.workplace_name and not any(kw in author.workplace_name.lower() for kw in faculty_keywords):
         return author.workplace_name
     return ""
@@ -125,11 +113,6 @@ def process_record(
         has_wos = bool(wos_aff_arr and any(x for x in wos_aff_arr if x))
 
         if has_wos:
-            # ------------------------------------------------------------
-            # STRATÉGIA A: WoS afiliácia dostupná
-            # Parsuj UTB bloky → matchuj autorov → urči fakultu/OU z WoS.
-            # Ak WoS neurčí fakultu/OU, použi údaj z registra (DB pracovísk).
-            # ------------------------------------------------------------
             matched_authors:   list[str] = []
             matched_faculties: list[str] = []
             matched_ous:       list[str] = []
@@ -147,7 +130,6 @@ def process_record(
                     needs_llm = True
 
                 for block in parsed.utb_blocks:
-                    # Pokus 1: fakulta/OU z WoS textu
                     wos_faculty, wos_ou = resolve_faculty_and_ou(block.affiliation_raw)
                     if not wos_ou:
                         candidates = extract_ou_candidates(block.affiliation_raw)
@@ -162,11 +144,8 @@ def process_record(
                         m = match_author(author_str, registry, settings.author_match_threshold)
                         if m.matched and m.author:
                             matched_authors.append(m.author.full_name)
-
-                            # Pokus 2: ak WoS nedal fakultu/OU, vezmi z registra
                             faculty = wos_faculty or _faculty_from_registry(m.author)
                             ou      = wos_ou      or _ou_from_registry(m.author)
-
                             matched_faculties.append(faculty)
                             matched_ous.append(ou)
                         else:
@@ -191,11 +170,6 @@ def process_record(
             })
 
         else:
-            # ------------------------------------------------------------
-            # STRATÉGIA B: Chýba WoS afiliácia
-            # Matchuj dc.contributor.author priamo proti registru.
-            # Fakultu/OU vezmi z registra (parent_name / workplace_name).
-            # ------------------------------------------------------------
             if not dc_authors_arr:
                 result["heuristic_status"] = HeuristicStatus.PROCESSED
                 result["flags"] = {FlagKey.NO_WOS_DATA: True}
@@ -222,7 +196,6 @@ def process_record(
 
             result.update({
                 "heuristic_status":               HeuristicStatus.PROCESSED,
-                # needs_llm=True len ak sme niečo našli ale nemáme fakultu
                 "needs_llm": any(
                     not f for f in matched_faculties
                 ) if matched_authors else False,
@@ -353,4 +326,4 @@ def run_heuristics(
         processed += len(rows)
         print(f"  Spracované: {processed}/{total}")
 
-    print(f"[OK] Heuristiky hotové. Spracovaných: {processed}")
+    print(f"[OK] Heuristiky autorov hotové. Spracovaných: {processed}")

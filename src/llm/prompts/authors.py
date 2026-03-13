@@ -1,4 +1,4 @@
-"""LLM prompt definície, Pydantic schémy a JSON Schema pre structured output."""
+"""Prompty, Pydantic schémy a JSON Schema pre extrakciu UTB autorov."""
 
 from __future__ import annotations
 
@@ -11,10 +11,9 @@ from src.common.constants import DEPARTMENTS, FACULTIES
 
 
 # -----------------------------------------------------------------------
-# Pydantic modely – prísna validácia výstupu LLM
+# Pydantic modely
 # -----------------------------------------------------------------------
 
-# Zoznamy povolených hodnôt pre validáciu
 _VALID_FACULTY_NAMES: frozenset[str] = frozenset(FACULTIES.values())
 _VALID_DEPT_NAMES:    frozenset[str] = frozenset(DEPARTMENTS.keys())
 
@@ -39,29 +38,19 @@ class LLMAuthorEntry(BaseModel):
     )
     ou: str = Field(
         default="",
-        description=(
-            "Plný anglický názov oddelenia/ústavu UTB. "
-            "Ak nie je známy, použi prázdny reťazec."
-        ),
+        description="Plný anglický názov oddelenia/ústavu UTB alebo prázdny reťazec.",
     )
 
     @field_validator("faculty")
     @classmethod
     def validate_faculty(cls, v: str) -> str:
         if v and v not in _VALID_FACULTY_NAMES:
-            # Mäkká validácia: ak LLM vrátilo neplatný názov, vyprázdni
             return ""
-        return v
-
-    @field_validator("ou")
-    @classmethod
-    def validate_ou(cls, v: str) -> str:
-        # Akceptuj aj čiastočné zhody (LLM môže skrátiť názov)
         return v
 
 
 class LLMResult(BaseModel):
-    """Prísna výstupná štruktúra LLM odpovede."""
+    """Výstupná štruktúra LLM odpovede pre autorov."""
 
     model_config = ConfigDict(extra="forbid")
 
@@ -72,11 +61,10 @@ class LLMResult(BaseModel):
 
 
 # -----------------------------------------------------------------------
-# JSON Schema pre structured output / function calling
+# JSON Schema pre structured output
 # -----------------------------------------------------------------------
 
-# Plný JSON Schema objekt pre response_format alebo function definition
-LLM_OUTPUT_JSON_SCHEMA: dict[str, Any] = {
+AUTHORS_JSON_SCHEMA: dict[str, Any] = {
     "type": "object",
     "required": ["internal_authors"],
     "additionalProperties": False,
@@ -108,14 +96,16 @@ LLM_OUTPUT_JSON_SCHEMA: dict[str, Any] = {
     },
 }
 
-# Definícia funkcie pre function calling (OpenAI format)
+# Backward-compat aliases
+LLM_OUTPUT_JSON_SCHEMA = AUTHORS_JSON_SCHEMA
+
 LLM_FUNCTION_DEF: dict[str, Any] = {
     "name":        "extract_utb_authors",
     "description": (
         "Extrahuje interných UTB autorov z textu afiliácie publikácie. "
         "Vráti iba autorov, ktorých meno je v poskytnutom whitelist zozname."
     ),
-    "parameters":  LLM_OUTPUT_JSON_SCHEMA,
+    "parameters":  AUTHORS_JSON_SCHEMA,
 }
 
 
@@ -161,27 +151,33 @@ Oddelenie, Fakulta, Inštitúcia, Adresa; Oddelenie2, Fakulta2, Inštitúcia2
 {{"internal_authors":[{{"name":"Novák, Jan","faculty":"Faculty of Technology","ou":"Department of Polymer Engineering"}}]}}
 """
 
+# Preamble pre Ollama konverzačný režim (systém načíta kontext raz, záznamy prichádzajú postupne)
+AUTHORS_SETUP_PREAMBLE: list[dict] = [
+    {
+        "role":    "user",
+        "content": (
+            "Rozumieš svojej úlohe? Budem ti posielať záznamy publikácií jeden po jednom. "
+            "Pre každý vrátiš JSON s internými UTB autormi podľa popísaných pravidiel."
+        ),
+    },
+    {
+        "role":    "assistant",
+        "content": '{"internal_authors": []}',
+    },
+]
+
 
 # -----------------------------------------------------------------------
 # Zostavenie user promptu
 # -----------------------------------------------------------------------
 
 def build_user_message(
-    resource_id:             int,
-    wos_affiliation:         str | None,
-    scopus_affiliation:      str | None,
-    flags:                   dict[str, Any] | None,
+    resource_id:              int,
+    wos_affiliation:          str | None,
+    scopus_affiliation:       str | None,
+    flags:                    dict[str, Any] | None,
     allowed_internal_authors: list[str],
 ) -> str:
-    """
-    Zostaví user message pre LLM s kontextom záznamu.
-
-    Obsahuje:
-      – WoS afiliáciu (s menami autorov)
-      – Scopus afiliáciu (bez mien, len inštitúcie)
-      – Relevantné flagy z heuristík
-      – Whitelist povolených mien interných autorov
-    """
     parts: list[str] = [f"=== Záznam resource_id={resource_id} ==="]
 
     if wos_affiliation:
@@ -209,7 +205,6 @@ def build_user_message(
                 "Kontext z heuristík:\n" + json.dumps(relevant, ensure_ascii=False, indent=2)
             )
 
-    # Whitelist – kľúčová informácia pre LLM
     parts.append(
         "Povolené mená interných autorov UTB (použi VÝHRADNE tieto mená):\n"
         + json.dumps(allowed_internal_authors, ensure_ascii=False)

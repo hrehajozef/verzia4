@@ -1,0 +1,317 @@
+"""
+Parser pre stĺpec utb_fulltext_dates.
+
+ARCHITEKTÚRA – label-first prístup:
+  Namiesto hľadania dátumov v texte hľadáme najprv LABELY (known keyword patterns),
+  rozdelíme text na segmenty podľa labelov a potom parsujeme dátum v každom segmente.
+"""
+from __future__ import annotations
+import re, unicodedata
+from dataclasses import dataclass, field
+from datetime import date
+from typing import Optional
+
+# ── inline labels (bez src. importov pre testovanie) ─────────────────────
+class DateCategory:
+    RECEIVED="received"; REVIEWED="reviewed"; ACCEPTED="accepted"
+    PUBLISHED_ONLINE="published_online"; PUBLISHED="published"
+    EXTRA="extra"; UNKNOWN="unknown"
+
+MONTHS_EN = {
+    "january":1,"jan":1,"february":2,"feb":2,"march":3,"mar":3,
+    "april":4,"apr":4,"may":5,"june":6,"jun":6,"july":7,"jul":7,
+    "august":8,"aug":8,"september":9,"sep":9,"sept":9,
+    "october":10,"oct":10,"november":11,"nov":11,"december":12,"dec":12,
+    "enero":1,"febrero":2,"marzo":3,"abril":4,"mayo":5,"junio":6,
+    "julio":7,"agosto":8,"septiembre":9,"octubre":10,"noviembre":11,"diciembre":12,
+    "i":1,"ii":2,"iii":3,"iv":4,"v":5,"vi":6,
+    "vii":7,"viii":8,"ix":9,"x":10,"xi":11,"xii":12,
+}
+DATE_REGEX_PATTERNS = [
+    ("iso_ymd",         r"(?P<year>\d{4})-(?P<month>\d{1,2})-(?P<day>\d{1,2})"),
+    ("dot_ymd",         r"(?P<year>\d{4})\.(?P<month>\d{1,2})\.(?P<day>\d{1,2})"),
+    ("dot_dmy_spaced",  r"(?P<day>\d{1,2})\.\s*(?P<month>\d{1,2})\.\s*(?P<year>\d{4})"),
+    ("dot_dmy",         r"(?P<day>\d{1,2})\.(?P<month>\d{1,2})\.(?P<year>\d{4})"),
+    ("day_of_month_year",r"(?P<day>\d{1,2})(?:st|nd|rd|th)?\s+of\s+(?P<month>[A-Za-záčýž]+\.?)\s*,?\s*(?P<year>\d{4})"),
+    ("day_month_year",  r"(?P<day>\d{1,2})(?:st|nd|rd|th)?\s+(?P<month>[A-Za-záčýžA-ZÁČÝŽ]+\.?)\s*,?\s*(?P<year>\d{4})"),
+    ("month_day_year",  r"(?P<month>[A-Za-záčýžA-ZÁČÝŽ]+\.?)\s*,?\s*(?P<day>\d{1,2})(?:st|nd|rd|th)?\s*,\s*(?P<year>\d{4})"),
+    ("month_year_only", r"(?P<month>[A-Za-záčýžA-ZÁČÝŽ]+\.?)\s*,?\s*(?P<year>\d{4})"),
+    ("year_only",       r"\{?\s*(?P<year>20\d{2}|19\d{2})\s*\}?"),
+]
+
+LABEL_MAP = {
+    "received": DateCategory.RECEIVED, "manuscript received": DateCategory.RECEIVED,
+    "paper received": DateCategory.RECEIVED, "article submitted": DateCategory.RECEIVED,
+    "submitted": DateCategory.RECEIVED, "doslo": DateCategory.RECEIVED,
+    "do redakce doslo": DateCategory.RECEIVED, "do redakce doslo dne": DateCategory.RECEIVED,
+    "clanek prijat redakci": DateCategory.RECEIVED, "primljeno": DateCategory.RECEIVED,
+    "fecha de recepcion": DateCategory.RECEIVED,
+    "received in revised form": DateCategory.REVIEWED,
+    "revised manuscript received": DateCategory.REVIEWED,
+    "editorial decision": DateCategory.REVIEWED, "prijato k recenzi": DateCategory.REVIEWED,
+    "accepted": DateCategory.ACCEPTED, "accepted for publication": DateCategory.ACCEPTED,
+    "accepted for publication on": DateCategory.ACCEPTED,
+    "accepted manuscript online": DateCategory.ACCEPTED,
+    "accepted author version posted online": DateCategory.ACCEPTED,
+    "accepted in revised form": DateCategory.ACCEPTED, "accepted on": DateCategory.ACCEPTED,
+    "final acceptance": DateCategory.ACCEPTED, "approved for publication": DateCategory.ACCEPTED,
+    "prijato do tisku": DateCategory.ACCEPTED, "prijato": DateCategory.ACCEPTED,
+    "clanek prijat k publikaci": DateCategory.ACCEPTED,
+    "fecha de aceptacion": DateCategory.ACCEPTED, "odobreno": DateCategory.ACCEPTED,
+    "published online": DateCategory.PUBLISHED_ONLINE,
+    "available online": DateCategory.PUBLISHED_ONLINE, "online": DateCategory.PUBLISHED_ONLINE,
+    "version of record online": DateCategory.PUBLISHED_ONLINE,
+    "previously published online": DateCategory.PUBLISHED_ONLINE,
+    "e-published": DateCategory.PUBLISHED_ONLINE, "epublished": DateCategory.PUBLISHED_ONLINE,
+    "zverejneno": DateCategory.PUBLISHED_ONLINE,
+    "published": DateCategory.PUBLISHED, "date of publication": DateCategory.PUBLISHED,
+    "article publication date": DateCategory.PUBLISHED, "first published": DateCategory.PUBLISHED,
+    "publication in this collection": DateCategory.PUBLISHED,
+    "revised": DateCategory.EXTRA, "resubmitted": DateCategory.EXTRA,
+    "prepracovano": DateCategory.EXTRA, "date of current version": DateCategory.EXTRA,
+    "issue publication date": DateCategory.EXTRA, "date of issue": DateCategory.EXTRA,
+}
+
+def normalize_label(label):
+    nfd = unicodedata.normalize("NFD", label.lower())
+    no_acc = "".join(c for c in nfd if unicodedata.category(c) != "Mn")
+    clean = re.sub(r"[:\.\s]+$","",no_acc)
+    return re.sub(r"\s+"," ",clean).strip()
+
+def match_label(raw_label):
+    norm = normalize_label(raw_label)
+    if not norm: return DateCategory.UNKNOWN
+    if norm in LABEL_MAP: return LABEL_MAP[norm]
+    for key in sorted(LABEL_MAP, key=len, reverse=True):
+        if norm.startswith(key): return LABEL_MAP[key]
+    for key in sorted(LABEL_MAP, key=len, reverse=True):
+        if key in norm: return LABEL_MAP[key]
+    return DateCategory.UNKNOWN
+
+# ── Dátové štruktúry ──────────────────────────────────────────────────────
+@dataclass
+class DateEntry:
+    raw_label: str; raw_date: str; category: str; parsed: Optional[date]
+    day_exact: bool = True; year_only: bool = False
+    def to_iso(self): return self.parsed.isoformat() if self.parsed else None
+
+@dataclass
+class ParsedDates:
+    resource_id: int; raw_text: str
+    received: Optional[date] = None; reviewed: Optional[date] = None
+    accepted: Optional[date] = None; published_online: Optional[date] = None
+    published: Optional[date] = None
+    all_entries: list = field(default_factory=list)
+    flags: dict = field(default_factory=dict)
+    needs_llm: bool = False; status: str = "not_processed"
+
+# ── Label-first rozdelenie ─────────────────────────────────────────────────
+_LABEL_PATTERNS = [
+    r"Received\s+in\s+revised\s+form",
+    r"Revised\s+manuscript\s+received", r"Manuscript\s+received",
+    r"Paper\s+received", r"Article\s+submitted",
+    r"Article\s+publication\s+date",
+    r"Accepted\s+author\s+version\s+posted\s+online",
+    r"Accepted\s+manuscript\s+online",
+    r"Accepted\s+for\s+publication\s+on", r"Accepted\s+for\s+publication",
+    r"Accepted\s+in\s+revised\s+form", r"Accepted\s+on",
+    r"Final\s+acceptance", r"Approved\s+for\s+publication",
+    r"Available\s+[Oo]nline", r"Published\s+[Oo]nline",
+    r"Version\s+of\s+record\s+online",
+    r"Previously\s+published\s+online",
+    r"Date\s+of\s+[Pp]ublication", r"Date\s+of\s+current\s+version",
+    r"Date\s+of\s+issue", r"Issue\s+publication\s+date",
+    r"First\s+[Pp]ublished",
+    r"Publication\s+in\s+this\s+collection",
+    r"Editorial\s+decision",
+    r"\d(?:st|nd|rd|th)\s+Revision",
+    r"E-?published",
+    r"Do\s+redakce\s+do(?:š|s)lo\s+dne", r"Do\s+redakce\s+do(?:š|s)lo",
+    r"[Čc]l[aá]nek\s+p[rř]ijat\s+k\s+publikaci",
+    r"[Čc]l[aá]nek\s+p[rř]ijat\s+redakc[íi]",
+    r"P[rř]ijato\s+k\s+recenzi", r"P[rř]ijato\s+do\s+tisku",
+    r"p[rř]epracov[aá]no", r"p[rř]ijato",
+    r"Do(?:š|s)lo",
+    r"zve[rř]ejn[eě]no",
+    r"Primljeno", r"Odobreno",
+    r"Fecha\s+de\s+recepci[oó]n", r"Fecha\s+de\s+aceptaci[oó]n",
+    r"date\s+of\s+publication", r"date\s+of\s+current\s+version",
+    r"Resubmitted", r"Submitted",
+    r"Revised",
+    r"Accepted", r"Received", r"Published", r"Online",
+]
+_LABEL_RE = re.compile(
+    r"(?<!\w)(" + "|".join(_LABEL_PATTERNS) + r")(?:\s*:)?\s*",
+    re.IGNORECASE,
+)
+
+def _clean_input(raw):
+    text = raw.strip().lstrip('{"').rstrip('"}')
+    text = text.replace('""', '"')
+    text = re.sub(r'[\n\r\t]+',' ',text)
+    return re.sub(r' {2,}',' ',text).strip()
+
+def _split_into_segments(text):
+    matches = list(_LABEL_RE.finditer(text))
+    if not matches: return []
+    segments = []
+    for i, m in enumerate(matches):
+        label_raw = m.group(1).strip()
+        date_start = m.end()
+        date_end = matches[i+1].start() if i+1 < len(matches) else len(text)
+        raw_date = re.sub(r'[.;,\s]+$','', text[date_start:date_end].strip())
+        segments.append((label_raw, raw_date))
+    return segments
+
+def _try_parse_date(text):
+    text = text.strip()
+    if re.search(r'00th|20xx|&&|0000', text, re.IGNORECASE): return None
+    for pattern_name, pattern in DATE_REGEX_PATTERNS:
+        m = re.search(pattern, text, re.IGNORECASE)
+        if not m: continue
+        g = m.groupdict()
+        year_str, month_str, day_str = g.get("year"), g.get("month"), g.get("day")
+        if not year_str: continue
+        try: year = int(year_str)
+        except: continue
+        if not (1990 <= year <= 2030): continue
+        if pattern_name == "year_only":
+            try: return date(year,1,1), False, True
+            except: continue
+        month = 0
+        if month_str:
+            mn = month_str.lower().rstrip('.')
+            month = MONTHS_EN.get(mn, 0)
+            if not month:
+                try: month = int(month_str)
+                except: pass
+        if not (1 <= month <= 12): continue
+        if pattern_name == "month_year_only" or not day_str:
+            try: return date(year,month,1), False, False
+            except: continue
+        day = 0
+        if day_str:
+            dc = re.sub(r'(?:st|nd|rd|th)$','',day_str.strip())
+            try: day = int(dc)
+            except: continue
+        if not (1 <= day <= 31): continue
+        try: return date(year,month,day), True, False
+        except: continue
+    return None
+
+def _validate_chronology(parsed):
+    warnings = []
+    seq = [("received",parsed.received),("reviewed",parsed.reviewed),
+           ("accepted",parsed.accepted),("published_online",parsed.published_online),
+           ("published",parsed.published)]
+    prev_l, prev_d = None, None
+    for l, d in seq:
+        if d is None: continue
+        if prev_d and d < prev_d:
+            delta = (prev_d - d).days
+            sev = "ERROR" if delta >= 30 else "WARNING"
+            warnings.append(f"{sev}: {l}={d} < {prev_l}={prev_d} ({delta} dní)")
+        prev_l, prev_d = l, d
+    return warnings
+
+def parse_fulltext_dates(resource_id, raw_text, dc_issued=None):
+    result = ParsedDates(resource_id=resource_id, raw_text=raw_text)
+    flags = {}
+    text = _clean_input(raw_text)
+
+    if not text:
+        result.status="empty"; result.flags=flags; return result
+
+    # Špeciálny prípad: len rok
+    if re.fullmatch(r'\{?\s*"?(\d{4})"?\s*\}?', text.strip()):
+        yr_m = re.search(r'\d{4}', text)
+        if yr_m and 1990 <= int(yr_m.group()) <= 2030:
+            flags["year_only_dates"]=[text.strip()]
+            result.needs_llm=True; result.status="year_only"
+            result.flags=flags; return result
+
+    segments = _split_into_segments(text)
+    if not segments:
+        flags["no_labels_found"]=True; flags["raw_text_preview"]=text[:200]
+        result.needs_llm=True; result.status="no_labels"
+        result.flags=flags; return result
+
+    placeholders=[]; unparseable=[]; unknown_labels=[]; month_year_only=[]; extra_entries=[]
+
+    for label_raw, date_text in segments:
+        category = match_label(label_raw)
+
+        # Placeholder?
+        if re.search(r'00th|20xx|&&\s*&&|0000', date_text, re.IGNORECASE):
+            placeholders.append(f"{label_raw!r}: {date_text[:60]!r}")
+            result.all_entries.append(DateEntry(label_raw,date_text,category,None))
+            continue
+
+        pr = _try_parse_date(date_text)
+        if pr is None:
+            # Ignoruj segmenty kde date_text je čistý prose text bez číslic
+            # (napr. "Final version published as submitted by the authors")
+            if label_raw and re.search(r'\d', date_text):
+                unparseable.append(f"{label_raw!r}: {date_text[:60]!r}")
+            result.all_entries.append(DateEntry(label_raw,date_text,category,None))
+            continue
+
+        parsed_date, day_exact, is_year_only = pr
+        if not day_exact and not is_year_only:
+            month_year_only.append(f"{label_raw!r}: {date_text!r} → {parsed_date}")
+
+        entry = DateEntry(label_raw, date_text, category, parsed_date, day_exact, is_year_only)
+        result.all_entries.append(entry)
+
+        if category == DateCategory.UNKNOWN:
+            unknown_labels.append(label_raw); extra_entries.append(entry); continue
+
+        if   category == DateCategory.RECEIVED:
+            if result.received is None: result.received = parsed_date
+            else: flags.setdefault("multiple_received",[]).append({"label":label_raw,"date":parsed_date.isoformat()})
+        elif category == DateCategory.REVIEWED:
+            if result.reviewed is None: result.reviewed = parsed_date
+            extra_entries.append(entry)   # každá revízia aj do extra
+        elif category == DateCategory.ACCEPTED:
+            if result.accepted is None: result.accepted = parsed_date
+        elif category == DateCategory.PUBLISHED_ONLINE:
+            if result.published_online is None: result.published_online = parsed_date
+        elif category == DateCategory.PUBLISHED:
+            if result.published is None: result.published = parsed_date
+        elif category == DateCategory.EXTRA:
+            extra_entries.append(entry)
+
+    if extra_entries:
+        flags["extra_dates"] = [{"label":e.raw_label,"date":e.to_iso(),"raw":e.raw_date}
+                                  for e in extra_entries if e.parsed]
+
+    if placeholders:   flags["placeholder_dates"]=placeholders;  result.needs_llm=True
+    if unparseable:    flags["unparseable_dates"]=unparseable;    result.needs_llm=True
+    if unknown_labels: flags["unknown_labels"]=list(dict.fromkeys(unknown_labels)); result.needs_llm=True
+    if month_year_only:flags["month_year_only"]=month_year_only
+
+    cw = _validate_chronology(result)
+    if cw:
+        flags["chrono_warnings"]=cw
+        if any(w.startswith("ERROR") for w in cw): result.needs_llm=True
+
+    has_any = any([result.received,result.reviewed,result.accepted,result.published_online,result.published])
+    if result.needs_llm:   result.status="needs_llm"
+    elif has_any:          result.status="processed"
+    else:                  result.status="no_dates"; result.needs_llm=True
+    result.flags=flags
+    return result
+
+# ── Patch: match_label rozšírenie pre ordinal revisions ─────────────────
+_ORIG_MATCH_LABEL = match_label
+
+def match_label(raw_label):
+    """
+    Rozšírená verzia match_label:
+    - Pridáva podporu pre "1st Revision", "2nd Revision" atď.
+    - Tieto sa mapujú na DateCategory.EXTRA (revízie idú do utb_date_extra)
+    """
+    # Ordinal revisions: "1st Revision", "2nd Revision", "Final version"
+    if re.search(r'\d(?:st|nd|rd|th)\s+revision', raw_label, re.IGNORECASE):
+        return DateCategory.EXTRA
+    return _ORIG_MATCH_LABEL(raw_label)

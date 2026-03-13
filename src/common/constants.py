@@ -18,6 +18,19 @@ class LLMStatus:
     VALIDATION_ERROR = "validation_error"
 
 
+class ValidationStatus:
+    NOT_CHECKED = "not_checked"
+    OK          = "ok"
+    HAS_ISSUES  = "has_issues"
+
+
+class DateLLMStatus:
+    NOT_PROCESSED    = "not_processed"
+    PROCESSED        = "processed"
+    ERROR            = "error"
+    VALIDATION_ERROR = "validation_error"
+
+
 class FlagKey:
     NO_WOS_DATA           = "no_wos_data"
     PARSE_WARNINGS        = "wos_parse_warnings"

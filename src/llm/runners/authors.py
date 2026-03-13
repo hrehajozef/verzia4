@@ -1,8 +1,9 @@
-"""LLM runner – spracuje záznamy s needs_llm=TRUE."""
+"""LLM runner pre autorov – spracuje záznamy s needs_llm=TRUE."""
 
 from __future__ import annotations
 
 import json
+import os
 import time
 from datetime import datetime, timezone
 
@@ -14,8 +15,8 @@ from src.authors.internal import InternalAuthor, get_author_registry
 from src.common.constants import LLMStatus
 from src.config.settings import settings
 from src.db.engines import get_local_engine
-from src.llm.client import LLMClient, get_llm_client, parse_llm_json_output
-from src.llm.prompt import SYSTEM_PROMPT, LLMResult, build_user_message
+from src.llm.client import LLMSession, create_authors_session, get_llm_client, parse_llm_json_output
+from src.llm.prompts.authors import LLMResult, build_user_message
 from src.parsers.wos_affiliation import normalize_text
 
 
@@ -28,50 +29,32 @@ def _select_candidates(
     unmatched_authors: list[str],
     max_candidates:    int = 80,
 ) -> list[str]:
-    """
-    Namiesto celého registra (2 298 mien) vráti len relevantných kandidátov.
-
-    Postup:
-    1. Pre každého nenájdeného autora z WoS hľadá v registri autorov
-       so zhodným priezviskom (prvé slovo normalizovaného mena).
-    2. Ak nenájde dosť kandidátov, doplní najbližších podľa Jaro-Winkler.
-    3. Vráti deduplikovaný zoznam max_candidates mien.
-
-    Takto sa prompt skráti z ~45 000 na ~2 000 znakov.
-    """
+    """Vráti relevantných kandidátov z registra pre daných nenájdených autorov."""
     if not unmatched_authors:
-        # Žiadni nenájdení autori → pošli prvých max_candidates zo registra
-        # (fallback, zriedkavý prípad)
         return [a.full_name for a in registry[:max_candidates]]
 
-    candidates: dict[str, float] = {}  # full_name → score
+    candidates: dict[str, float] = {}
 
     for wos_name in unmatched_authors:
-        norm_wos = normalize_text(wos_name)
-        # Priezvisko = prvé slovo (WoS formát: "Priezvisko, Meno" alebo "Priezvisko Meno")
+        norm_wos    = normalize_text(wos_name)
         wos_surname = norm_wos.split(",")[0].strip().split()[0] if norm_wos else ""
 
         for author in registry:
             norm_auth    = author.norm_name
             auth_surname = norm_auth.split(",")[0].strip().split()[0] if norm_auth else ""
 
-            # Rýchla zhoda priezviska - nevyžaduje knižnicu
             if wos_surname and auth_surname:
-                # Presná zhoda priezviska
                 if wos_surname == auth_surname:
                     candidates[author.full_name] = 1.0
                     continue
-                # Čiastočná zhoda - jedno je prefix druhého (napr. "novak" vs "novakova")
                 if wos_surname.startswith(auth_surname[:4]) or auth_surname.startswith(wos_surname[:4]):
                     score = len(os.path.commonprefix([wos_surname, auth_surname])) / max(len(wos_surname), len(auth_surname))
                     if score > 0.6:
                         candidates[author.full_name] = max(candidates.get(author.full_name, 0), score)
 
-    # Zoraď podľa skóre, vráť top max_candidates
     sorted_candidates = sorted(candidates.items(), key=lambda x: -x[1])
     result = [name for name, _ in sorted_candidates[:max_candidates]]
 
-    # Ak je kandidátov málo, doplň náhodné zo registra pre pokrytie
     if len(result) < 10:
         extras = [a.full_name for a in registry if a.full_name not in set(result)]
         result.extend(extras[:max_candidates - len(result)])
@@ -79,16 +62,11 @@ def _select_candidates(
     return result
 
 
-# Importuj os pre commonprefix
-import os
-
-
 # -----------------------------------------------------------------------
-# Filtrovanie LLM výstupu podľa whitelist registra
+# Filter výstupu voči registru (anti-halucinácia)
 # -----------------------------------------------------------------------
 
 def _filter_by_registry(llm_result: LLMResult, registry: list[InternalAuthor]) -> LLMResult:
-    """Ponechá iba autorov, ktorých meno je v internom registri (anti-halucinácia)."""
     allowed  = {a.full_name for a in registry}
     filtered = [e for e in llm_result.internal_authors if e.name in allowed]
     return LLMResult(internal_authors=filtered)
@@ -103,7 +81,7 @@ def process_llm_record(
     wos_aff:     list[str] | None,
     scopus_aff:  list[str] | None,
     flags:       dict      | None,
-    llm_client:  LLMClient,
+    session:     LLMSession,
     registry:    list[InternalAuthor],
 ) -> dict:
 
@@ -119,10 +97,7 @@ def process_llm_record(
 
     raw_output = ""
     try:
-        # Nenájdení autori z heuristík – kľúčový vstup pre výber kandidátov
         unmatched = (flags or {}).get("utb_authors_unmatched", [])
-
-        # Vyber len relevantných kandidátov namiesto celého registra
         candidate_names = _select_candidates(registry, unmatched, max_candidates=80)
 
         wos_text    = "\n---\n".join(str(i) for i in (wos_aff or []) if i) or None
@@ -136,10 +111,9 @@ def process_llm_record(
             allowed_internal_authors = candidate_names,
         )
 
-        raw_output  = llm_client.complete(SYSTEM_PROMPT, user_msg)
+        raw_output  = session.ask(user_msg)
         parsed_dict = parse_llm_json_output(raw_output)
         llm_result  = LLMResult(**parsed_dict)
-        # Sekundárna ochrana: overenie voči celému registru
         llm_result  = _filter_by_registry(llm_result, registry)
 
         authors   = [e.name    for e in llm_result.internal_authors]
@@ -181,6 +155,7 @@ def run_llm(
     table      = settings.local_table
 
     llm_client = get_llm_client(provider)
+    session    = create_authors_session(llm_client)
     registry   = get_author_registry(engine)
 
     with engine.connect() as conn:
@@ -195,10 +170,10 @@ def run_llm(
     if limit > 0:
         total = min(total, limit)
     if total == 0:
-        print("[INFO] Žiadne záznamy na LLM spracovanie.")
+        print("[INFO] Žiadne záznamy na LLM spracovanie autorov.")
         return
 
-    print(f"[INFO] LLM záznamov na spracovanie: {total}")
+    print(f"[INFO] LLM autorov – záznamov na spracovanie: {total}")
     processed = 0
     errors    = 0
     started   = time.time()
@@ -207,10 +182,9 @@ def run_llm(
         batch = min(batch_size, total - processed)
         with engine.connect() as conn:
             rows = conn.execute(
-                text(
-                    f"""
+                text(f"""
                     SELECT resource_id,
-                           "utb.wos.affiliation"   AS wos_aff,
+                           "utb.wos.affiliation"    AS wos_aff,
                            "utb.scopus.affiliation" AS scopus_aff,
                            flags
                     FROM "{schema}"."{table}"
@@ -218,8 +192,7 @@ def run_llm(
                       AND llm_status IN (:np, :err)
                     ORDER BY resource_id
                     LIMIT :lim
-                    """
-                ),
+                """),
                 {"np": LLMStatus.NOT_PROCESSED, "err": LLMStatus.ERROR, "lim": batch},
             ).fetchall()
 
@@ -232,7 +205,7 @@ def run_llm(
                 wos_aff     = row.wos_aff,
                 scopus_aff  = row.scopus_aff,
                 flags       = row.flags or {},
-                llm_client  = llm_client,
+                session     = session,
                 registry    = registry,
             )
             for row in rows
@@ -276,6 +249,6 @@ def run_llm(
         print(f"  Spracované: {processed}/{total} | chyby: {errors} | {speed:.1f} záz/s")
 
         if (provider or settings.llm_provider or "").lower() != "ollama":
-            time.sleep(5)  # Pauza pre ne-Ollama LLM, aby sme nepreťažili API
+            time.sleep(5)
 
-    print(f"[OK] LLM hotové. Spracovaných: {processed}, chýb: {errors}")
+    print(f"[OK] LLM autorov hotové. Spracovaných: {processed}, chýb: {errors}")
