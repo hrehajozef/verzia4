@@ -44,7 +44,7 @@ def bootstrap(
     drop: bool = typer.Option(False, "--drop", help="Zmaže lokálnu tabuľku a vytvorí ju znova."),
 ) -> None:
     """Inicializácia lokálnej databázy – skopíruje remote tabuľku."""
-    from src.db.bootstrap import run_bootstrap
+    from src.db.setup import run_bootstrap
 
     typer.echo("Testujem DB pripojenia...")
     if not test_connection(get_remote_engine(), "Remote DB"):
@@ -79,9 +79,9 @@ def import_authors(
       python -m src.cli import-authors --csv data/autori_utb_oficial_utf8.csv
 
     Poznámka: import z remote DB (obd_prac / S_LIDE) je zatiaľ zakomentovaný
-    v src/authors/internal.py – reaktivovať keď budú tabuľky dostupné.
+    v src/authors/registry.py – reaktivovať keď budú tabuľky dostupné.
     """
-    from src.authors.internal import (
+    from src.authors.registry import (
         clear_author_registry_cache,
         import_authors_to_db,
         load_authors_from_csv,
@@ -115,7 +115,7 @@ def validate_setup() -> None:
 
     Spusti raz pred prvým spustením validate. Bezpečné spustiť opakovane.
     """
-    from src.validation.checks import setup_validation_columns
+    from src.quality.checks import setup_validation_columns
     setup_validation_columns()
 
 
@@ -135,14 +135,14 @@ def validate(
       python -m src.cli validate
       python -m src.cli validate --limit 100 --revalidate
     """
-    from src.validation.checks import run_validation
+    from src.quality.checks import run_validation
     run_validation(batch_size=batch_size, limit=limit, revalidate=revalidate)
 
 
 @app.command(name="validate-status")
 def validate_status() -> None:
     """Štatistiky validácie metadát."""
-    from src.validation.checks import print_validation_status
+    from src.quality.checks import print_validation_status
     print_validation_status()
 
 
@@ -158,7 +158,7 @@ def heuristics_run(
     normalize:        bool       = typer.Option(False, "--normalize",        help="Porovnávať mená aj na normalizovaných hodnotách (bez diakritiky, lowercase) + fuzzy. Štandardne vypnuté – porovnáva sa na surových hodnotách."),
 ) -> None:
     """Heuristické spracovanie mien a afiliácií autorov."""
-    from src.heuristics.authors import run_heuristics
+    from src.authors.heuristics import run_heuristics
     run_heuristics(batch_size=batch_size, limit=limit, reprocess_errors=reprocess_errors, normalize=normalize)
 
 
@@ -169,7 +169,7 @@ def heuristics_llm(
     provider:   str | None = typer.Option(None, "--provider",   help="ollama alebo openai."),
 ) -> None:
     """LLM spracovanie autorov (záznamy s needs_llm=TRUE, po heuristikách)."""
-    from src.llm.runners.authors import run_llm
+    from src.llm.tasks.authors import run_llm
     run_llm(batch_size=batch_size, limit=limit, provider=provider)
 
 
@@ -215,7 +215,7 @@ def dates_setup() -> None:
 
     Spusti raz pred prvým spracovaním dátumov. Bezpečné spustiť opakovane.
     """
-    from src.heuristics.dates import setup_date_columns
+    from src.dates.heuristics import setup_date_columns
     setup_date_columns()
 
 
@@ -233,7 +233,7 @@ def dates_run(
       python -m src.cli dates --limit 50
       python -m src.cli dates --reprocess
     """
-    from src.heuristics.dates import run_date_heuristics
+    from src.dates.heuristics import run_date_heuristics
     run_date_heuristics(batch_size=batch_size, limit=limit, reprocess=reprocess)
 
 
@@ -246,14 +246,14 @@ def dates_llm(
     include_dash:  bool       = typer.Option(False, "--include-dash", help="Spracovať aj záznamy kde utb.fulltext.dates = '{-}'. Štandardne preskočené."),
 ) -> None:
     """LLM spracovanie dátumov (záznamy s date_needs_llm=TRUE, po dates heuristikách)."""
-    from src.llm.runners.dates import run_date_llm
+    from src.llm.tasks.dates import run_date_llm
     run_date_llm(batch_size=batch_size, limit=limit, provider=provider, reprocess=reprocess, include_dash=include_dash)
 
 
 @app.command(name="dates-status")
 def dates_status() -> None:
     """Štatistiky spracovania dátumov."""
-    from src.heuristics.dates import print_date_status
+    from src.dates.heuristics import print_date_status
     print_date_status()
 
 
@@ -286,7 +286,7 @@ def deduplicate(
       python -m src.cli deduplicate --by dc.title --no-fuzzy
       python -m src.cli deduplicate --dry-run
     """
-    from src.deduplication.deduplicator import run_deduplication
+    from src.quality.dedup import run_deduplication
 
     effective_threshold = threshold if threshold > 0.0 else settings.fuzzy_dedup_threshold
 
@@ -301,7 +301,7 @@ def deduplicate(
 @app.command(name="dedup-status")
 def dedup_status() -> None:
     """Štatistiky deduplikácie."""
-    from src.deduplication.deduplicator import print_dedup_status
+    from src.quality.dedup import print_dedup_status
     print_dedup_status()
 
 

@@ -1,7 +1,7 @@
-"""Testy pre src/deduplication/deduplicator.py"""
+"""Testy pre src/quality/dedup.py"""
 
 import pytest
-from src.deduplication.deduplicator import (
+from src.quality.dedup import (
     _normalize_text,
     _norm_column_value,
     _extract_year,

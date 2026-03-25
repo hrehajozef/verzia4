@@ -1,7 +1,7 @@
-"""Testy pre src/validation/checks.py"""
+"""Testy pre src/quality/checks.py"""
 
 import pytest
-from src.validation.checks import (
+from src.quality.checks import (
     check_trailing_spaces,
     check_mojibake,
     check_doi_format,

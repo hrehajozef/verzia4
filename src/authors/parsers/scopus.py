@@ -13,7 +13,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass, field
 
-from src.parsers.wos_affiliation import detect_utb_affiliation, normalize_text
+from src.authors.parsers.wos import detect_utb_affiliation, normalize_text
 
 
 @dataclass

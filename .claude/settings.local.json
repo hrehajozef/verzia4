@@ -7,7 +7,9 @@
       "Read(//c/Users/jozef/AppData/Local/Programs/Python//**)",
       "Bash(cd \"C:/Users/jozef/School/diplomovka/git_repo/verzia4\" && uv sync --all-groups 2>&1)",
       "Bash(cd \"C:/Users/jozef/School/diplomovka/git_repo/verzia4\" && uv run pytest --tb=short -q 2>&1 | tail -10)",
-      "Bash(cd \"C:/Users/jozef/School/diplomovka/git_repo/verzia4\" && uv run pytest --tb=short -q 2>&1 | tail -12)"
+      "Bash(cd \"C:/Users/jozef/School/diplomovka/git_repo/verzia4\" && uv run pytest --tb=short -q 2>&1 | tail -12)",
+      "Bash(python -m pytest --version)",
+      "Bash(uv --version)"
     ]
   }
 }

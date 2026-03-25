@@ -1,13 +1,14 @@
-"""Testy pre src/llm/client.py (LLMSession) a src/llm/prompts/dates.py"""
+"""Testy pre src/llm/session.py, src/llm/client.py, src/llm/tasks/dates.py a src/llm/tasks/authors.py"""
 
 import json
 import pytest
 from datetime import date
 from unittest.mock import MagicMock, patch
 
-from src.llm.client import LLMSession, OllamaClient, CloudLLMCompatibleClient, parse_llm_json_output
-from src.llm.prompts.dates import DateLLMResult
-from src.llm.prompts.authors import AUTHORS_JSON_SCHEMA, SYSTEM_PROMPT, AUTHORS_SETUP_PREAMBLE, LLMResult
+from src.llm.client import OllamaClient, CloudLLMCompatibleClient, parse_llm_json_output
+from src.llm.session import LLMSession
+from src.llm.tasks.dates import DateLLMResult
+from src.llm.tasks.authors import AUTHORS_JSON_SCHEMA, SYSTEM_PROMPT, AUTHORS_SETUP_PREAMBLE, LLMResult
 
 
 # -----------------------------------------------------------------------

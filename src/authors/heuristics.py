@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from src.authors.internal import InternalAuthor, get_author_registry, match_author
+from src.authors.registry import InternalAuthor, get_author_registry, match_author
 from src.common.constants import (
     DEPT_KEYWORD_MAP,
     FACULTIES,
@@ -27,7 +27,7 @@ from src.common.constants import (
 )
 from src.config.settings import settings
 from src.db.engines import get_local_engine
-from src.parsers.wos_affiliation import (
+from src.authors.parsers.wos import (
     extract_ou_candidates,
     normalize_text,
     parse_wos_affiliation,

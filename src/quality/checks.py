@@ -88,6 +88,8 @@ def validate_record(
     row_data:       dict[str, Any],
     registry_names: set[str],
 ) -> tuple[str, dict]:
+    # takze vstup moze byt napr. {"dc.title": "  Some Title  ", "dc.contributor.author": ["John Doe", "Jane Smith"], ...}
+    # registry_names je
     """
     Zvaliduje jeden záznam. Vráti (status, issues_dict).
 
