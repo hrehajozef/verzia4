@@ -48,8 +48,10 @@ class DateLLMResult(BaseModel):
             return ""
         if _DATE_RE.match(v):
             try:
-                date.fromisoformat(v)
-                return v
+                d = date.fromisoformat(v)
+                # Rok musí byť v rozumnom rozsahu pre vedecké publikácie UTB
+                if 1990 <= d.year <= 2035:
+                    return v
             except ValueError:
                 pass
         return ""
@@ -106,19 +108,28 @@ DATES_SYSTEM_PROMPT = """Si expert na extrakciu dátumov z metadát vedeckých p
 
 ## Tvoja úloha:
 Zo surového textu metadát urči kedy bol článok:
-  1. received    – doručený do redakcie (Received, Submitted, Došlo)
-  2. reviewed    – po recenzii (Received in revised form, Editorial decision)
-  3. accepted    – prijatý na publikáciu (Accepted, Approved for publication)
+  1. received         – doručený do redakcie (Received, Submitted, Došlo)
+  2. reviewed         – po recenzii (Received in revised form, Editorial decision)
+  3. accepted         – prijatý na publikáciu (Accepted, Approved for publication)
   4. published_online – zverejnený online (Published online, Available online)
-  5. published   – publikovaný tlačene (Published, Date of publication)
+  5. published        – publikovaný tlačene (Published, Date of publication)
 
 ## Pravidlá – MUSÍŠ ich dodržať
 1. Výstup je VÝHRADNE JSON objekt so 5 kľúčmi: received, reviewed, accepted, published_online, published.
 2. Každá hodnota je ISO dátum vo formáte YYYY-MM-DD alebo prázdny reťazec "" ak dátum nie je dostupný.
-3. Ak je dostupný iba mesiac a rok, použij prvý deň mesiaca (napr. "2019-03-01").
-4. Ak je dostupný iba rok, použij "YYYY-01-01".
-5. Zachovaj chronologické poradie: received ≤ reviewed ≤ accepted ≤ published_online ≤ published.
-6. Žiadne komentáre, markdown, vysvetlenia – iba JSON.
+3. Ak je dostupný iba mesiac a rok, použi prvý deň mesiaca (napr. "2019-03-01").
+4. Ak je dostupný iba rok, použi "YYYY-01-01".
+5. Extrahuj dátumy PRESNE tak ako sú uvedené v texte. Ak text obsahuje dátumy
+   v nesprávnom chronologickom poradí (received > accepted), extrahuj ich aj tak – neupravuj ich.
+6. Rok musí byť v rozsahu 1990–2035. Ak rok nespadá do rozsahu, použi "".
+7. Žiadne komentáre, markdown, vysvetlenia – iba JSON.
+
+## Formát bodkových dátumov (DD.MM.YYYY vs MM.DD.YYYY)
+Ak vstupný text obsahuje dátumy vo formáte A.B.RRRR:
+  • Ak A > 12: ide o DD.MM.RRRR (deň nemôže byť mesiac)
+  • Ak B > 12: ide o MM.DD.RRRR (mesiac nemôže byť > 12)
+  • Ak oba ≤ 12: urči formát podľa chronologického kontextu (received ≤ accepted ≤ published)
+  • Uprednostni európsky formát DD.MM.RRRR ak kontext nepomôže
 
 ## Príklad vstupu
 Received: 15 March 2018; Accepted for publication: 20 June 2018; Published online: 5 July 2018
@@ -127,18 +138,23 @@ Received: 15 March 2018; Accepted for publication: 20 June 2018; Published onlin
 {"received": "2018-03-15", "reviewed": "", "accepted": "2018-06-20", "published_online": "2018-07-05", "published": ""}
 """
 
-# Preamble pre Ollama konverzačný režim
+# Preamble pre Ollama konverzačný režim (KV-cache optimalizácia – načíta sa raz).
+# Príklad musí byť realistický (nie prázdny), aby model videl očakávaný formát odpovede.
 DATES_SETUP_PREAMBLE: list[dict] = [
     {
         "role":    "user",
         "content": (
-            "Rozumieš svojej úlohe? Budem ti posielať texty s dátumami publikácií jeden po jednom. "
-            "Pre každý vrátiš JSON s 5 dátumovými poľami."
+            "=== Záznam resource_id=0 (ukážka) ===\n\n"
+            "Surový text dátumov:\n"
+            "Received: 15 March 2018; Accepted for publication: 20 June 2018; "
+            "Published online: 5 July 2018\n\n"
+            'Vráť JSON objekt s kľúčmi: "received", "reviewed", "accepted", '
+            '"published_online", "published". Každá hodnota je YYYY-MM-DD alebo "".'
         ),
     },
     {
         "role":    "assistant",
-        "content": '{"received": "", "reviewed": "", "accepted": "", "published_online": "", "published": ""}',
+        "content": '{"received": "2018-03-15", "reviewed": "", "accepted": "2018-06-20", "published_online": "2018-07-05", "published": ""}',
     },
 ]
 
@@ -154,6 +170,7 @@ def build_date_user_message(
     date_flags:     dict[str, Any] | None,
 ) -> str:
     """Zostaví user message pre LLM parsovanie dátumov."""
+    flags = date_flags or {}
     parts: list[str] = [f"=== Záznam resource_id={resource_id} ==="]
 
     parts.append(f"Surový text dátumov:\n{raw_date_text}")
@@ -161,17 +178,58 @@ def build_date_user_message(
     if dc_issued:
         parts.append(f"dc.date.issued (rok vydania z katalógu): {dc_issued}")
 
-    if date_flags:
-        relevant = {
-            k: date_flags[k]
-            for k in ("unknown_labels", "unparseable_dates", "placeholder_dates",
-                       "no_labels_found", "chrono_warnings", "year_only_dates")
-            if k in date_flags
-        }
-        if relevant:
+    # Ostatné problémy heuristiky (bez MDR – tie riešime osobitne nižšie)
+    _HEURISTIC_KEYS = (
+        "unknown_labels", "unparseable_dates", "placeholder_dates",
+        "no_labels_found", "chrono_warnings", "year_only_dates",
+    )
+    relevant = {k: flags[k] for k in _HEURISTIC_KEYS if k in flags}
+    if relevant:
+        parts.append(
+            "Problémy heuristiky:\n" + json.dumps(relevant, ensure_ascii=False, indent=2)
+        )
+
+    # MDR (Month-Day / Day-Month) kontext – explicitné pokyny pre LLM
+    if "mdr_ambiguous" in flags:
+        mdr = flags["mdr_ambiguous"]
+        dmy = mdr.get("dmy_interpretation", "")
+        mdy = mdr.get("mdy_interpretation", "")
+        note = (
+            "DÔLEŽITÉ – Formát bodkového dátumu je nejednoznačný (DD.MM.RRRR vs MM.DD.RRRR).\n"
+            f"  Interpretácia DD.MM.RRRR: {dmy}\n"
+            f"  Interpretácia MM.DD.RRRR: {mdy}\n"
+            "Urči správny formát z kontextu (chronologické poradie, rok vydania). "
+            "Ak ani kontext nepomôže, použi DD.MM.RRRR (európsky formát)."
+        )
+        parts.append(note)
+
+    elif "mdr_format_resolved" in flags:
+        mdr = flags["mdr_format_resolved"]
+        conf = mdr.get("confidence", "")
+        fmt  = mdr.get("format", "")
+        if conf == "medium":
+            # Heuristika použila chronológiu, ale nie je si 100% istá
             parts.append(
-                "Problémy heuristiky:\n" + json.dumps(relevant, ensure_ascii=False, indent=2)
+                f"POZNÁMKA – Formát bodkového dátumu určený heuristikou: {fmt} "
+                f"(stredná istota – overené chronologickým poradím). "
+                "Ak vidíš iný formát z kontextu, použi ho."
             )
+
+    elif "mdr_format_conflict" in flags:
+        mdr = flags["mdr_format_conflict"]
+        parts.append(
+            "UPOZORNENIE – Konflikt formátov dátumov: niektoré dátumy sú jednoznačne DD.MM.RRRR "
+            "a iné MM.DD.RRRR. Pravdepodobná chyba v zdrojových dátach. "
+            "Skús každý dátum posúdiť zvlášť podľa kontextu.\n"
+            "Detail: " + json.dumps(mdr, ensure_ascii=False)
+        )
+
+    elif "mdr_chrono_error" in flags:
+        parts.append(
+            "UPOZORNENIE – Ani DD.MM.RRRR ani MM.DD.RRRR interpretácia nedáva chronologicky "
+            "konzistentné dátumy. Extrahuj dátumy presne z textu tak ako sú – "
+            "nevymýšľaj ani neopravuj."
+        )
 
     parts.append(
         'Vráť JSON objekt s kľúčmi: "received", "reviewed", "accepted", '
@@ -205,36 +263,44 @@ def process_date_llm_record(
         "published":          None,
     }
 
+    user_msg = build_date_user_message(
+        resource_id   = resource_id,
+        raw_date_text = raw_date_text,
+        dc_issued     = dc_issued,
+        date_flags    = date_flags or {},
+    )
+
     raw_output = ""
-    try:
-        user_msg = build_date_user_message(
-            resource_id   = resource_id,
-            raw_date_text = raw_date_text,
-            dc_issued     = dc_issued,
-            date_flags    = date_flags or {},
-        )
+    # 1 retry pre prechodné chyby (nevalidný JSON, sieťová chyba).
+    # ValidationError sa neretriuje – ide o štrukturálny problém odpovede.
+    for attempt in range(2):
+        try:
+            raw_output  = session.ask(user_msg)
+            parsed_dict = parse_llm_json_output(raw_output)
+            llm_result  = DateLLMResult(**parsed_dict)
 
-        raw_output  = session.ask(user_msg)
-        parsed_dict = parse_llm_json_output(raw_output)
-        llm_result  = DateLLMResult(**parsed_dict)
+            result.update({
+                "date_llm_status":  "processed",
+                "date_llm_result":  llm_result.model_dump(),
+                "received":         llm_result.to_date("received"),
+                "reviewed":         llm_result.to_date("reviewed"),
+                "accepted":         llm_result.to_date("accepted"),
+                "published_online": llm_result.to_date("published_online"),
+                "published":        llm_result.to_date("published"),
+            })
+            break  # úspech
 
-        result.update({
-            "date_llm_status":  "processed",
-            "date_llm_result":  llm_result.model_dump(),
-            "received":         llm_result.to_date("received"),
-            "reviewed":         llm_result.to_date("reviewed"),
-            "accepted":         llm_result.to_date("accepted"),
-            "published_online": llm_result.to_date("published_online"),
-            "published":        llm_result.to_date("published"),
-        })
+        except ValidationError as exc:
+            result["date_llm_status"] = "validation_error"
+            result["date_llm_result"] = {"error": str(exc), "raw": raw_output[:2000]}
+            break  # štrukturálna chyba – retry nepomôže
 
-    except ValidationError as exc:
-        result["date_llm_status"] = "validation_error"
-        result["date_llm_result"] = {"error": str(exc), "raw": raw_output[:2000]}
-
-    except Exception as exc:
-        result["date_llm_status"] = "error"
-        result["date_llm_result"] = {"error": f"{type(exc).__name__}: {exc}", "raw": raw_output[:500]}
+        except Exception as exc:
+            if attempt == 0:
+                time.sleep(2)
+                continue   # jeden retry
+            result["date_llm_status"] = "error"
+            result["date_llm_result"] = {"error": f"{type(exc).__name__}: {exc}", "raw": raw_output[:1000]}
 
     return result
 

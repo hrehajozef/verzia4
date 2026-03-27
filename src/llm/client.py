@@ -79,6 +79,9 @@ class OllamaClient(LLMClient):
       • Preamble správy sa vložia medzi system a user message.
       • Ollama KV-cache znovupoužije spoločný prefix → rýchlejšie spracovanie.
       • Záznamy si navzájom NEOVPLYVŇUJÚ výstup (história sa neakumuluje).
+
+    Retry:
+      • Prechodné chyby siete a 5xx → exponenciálny backoff (rovnako ako Cloud klient).
     """
 
     def __init__(
@@ -90,6 +93,26 @@ class OllamaClient(LLMClient):
         self.base_url = (base_url or settings.local_llm_base_url).rstrip("/")
         self.model    = model   or settings.local_llm_model
         self.timeout  = timeout or settings.llm_timeout
+
+    def _post_with_retry(self, payload: dict) -> dict:
+        max_retries = max(settings.llm_max_retries, 1)
+        for attempt in range(1, max_retries + 1):
+            try:
+                with httpx.Client(timeout=self.timeout) as client:
+                    response = client.post(f"{self.base_url}/api/chat", json=payload)
+                    response.raise_for_status()
+                    return response.json()
+            except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
+                if attempt < max_retries:
+                    time.sleep(settings.llm_retry_base_delay * attempt)
+                    continue
+                raise RuntimeError(f"Ollama nedostupná po {max_retries} pokusoch: {exc}") from exc
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in {500, 502, 503, 504} and attempt < max_retries:
+                    time.sleep(settings.llm_retry_base_delay * attempt)
+                    continue
+                raise
+        raise RuntimeError("Ollama request zlyhala.")  # nedosiahnuteľné
 
     def complete(
         self,
@@ -113,10 +136,7 @@ class OllamaClient(LLMClient):
             "format":   json_schema if json_schema is not None else "json",
         }
 
-        with httpx.Client(timeout=self.timeout) as client:
-            response = client.post(f"{self.base_url}/api/chat", json=payload)
-            response.raise_for_status()
-            return response.json()["message"]["content"]
+        return self._post_with_retry(payload)["message"]["content"]
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -193,6 +213,8 @@ class CloudLLMCompatibleClient(LLMClient):
             return data["choices"][0]["message"]["content"]
 
         # --- Pokus 1: Structured output s JSON Schema ---
+        # Zachytávame len 4xx (endpoint nepodporuje funkciu) a malformovaný JSON.
+        # Sieťové chyby a 5xx (po vyčerpaní retries) propagujeme vyššie.
         try:
             payload = {
                 "model":    self.model,
@@ -210,8 +232,12 @@ class CloudLLMCompatibleClient(LLMClient):
             content = data["choices"][0]["message"]["content"]
             json.loads(content)   # validácia parsovateľnosti
             return content
-        except Exception:
-            pass
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code >= 500:
+                raise   # 5xx po retries → propaguj
+            # 4xx = endpoint nepodporuje json_schema → skús ďalší spôsob
+        except (KeyError, json.JSONDecodeError):
+            pass   # malformovaná odpoveď → skús ďalší spôsob
 
         # --- Pokus 2: Function calling s json_schema ---
         func_def = {
@@ -232,10 +258,13 @@ class CloudLLMCompatibleClient(LLMClient):
                 args = msg["tool_calls"][0]["function"].get("arguments", "{}")
                 json.loads(args)
                 return args
-        except Exception:
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code >= 500:
+                raise
+        except (KeyError, json.JSONDecodeError):
             pass
 
-        # --- Pokus 3: json_object fallback ---
+        # --- Pokus 3: json_object fallback (posledná možnosť, bez schémy) ---
         payload = {
             "model":           self.model,
             "messages":        messages,

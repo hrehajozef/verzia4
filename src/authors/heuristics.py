@@ -1,10 +1,13 @@
 """Heuristický runner pre mená autorov a afiliácie.
 
 Stratégie:
-  A) Má WoS afiliáciu → parsuj WoS bloky, matchuj autorov z UTB blokov.
-     Fakultu/OU urči z WoS textu; ak nenájdeš, použi pracovisko z registra.
+  A) Má WoS afiliáciu → parsuj WoS bloky, matchuj autorov z UTB blokov voči
+     lokálnej tabuľke utb_internal_authors. Pre každého nájdeného autora sa
+     WoS fakulta má prednosť; ak nezodpovedá remote DB, zapíše sa flag.
+     Ak WoS neobsahuje OU, doplní sa z remote DB.
   B) Nemá WoS afiliáciu → matchuj dc.contributor.author priamo proti registru.
-     Fakultu/OU vezmi priamo z registra (parent_name / workplace_name).
+     Fakultu/OU vezmi z remote DB. Ak má autor viac fakúlt a WoS nepomôže,
+     zapíše sa flag pre manuálne doriešenie knihovníkom.
 """
 
 from __future__ import annotations
@@ -15,10 +18,17 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from src.authors.registry import InternalAuthor, get_author_registry, match_author
+from src.authors.registry import (
+    InternalAuthor,
+    get_author_registry,
+    lookup_author_affiliations,
+    match_author,
+)
 from src.common.constants import (
+    CZECH_FACULTY_MAP_NORM,
     DEPT_KEYWORD_MAP,
     FACULTIES,
+    FACULTY_ENGLISH_TO_ID,
     FACULTY_KEYWORD_RULES,
     WOS_ABBREV_NORM,
     FlagKey,
@@ -26,14 +36,14 @@ from src.common.constants import (
     _norm,
 )
 from src.config.settings import settings
-from src.db.engines import get_local_engine
+from src.db.engines import get_local_engine, get_remote_engine
 from src.authors.parsers.wos import (
     extract_ou_candidates,
     normalize_text,
     parse_wos_affiliation,
 )
 
-HEURISTIC_VERSION = "3.3.0"
+HEURISTIC_VERSION = "4.0.0"
 
 _DEPT_PREFIXES = ("dept", "ctr ", "inst ", "lab ", "centre", "center", "language", "res ctr")
 
@@ -47,7 +57,7 @@ def _keyword_score(keyword: str) -> int:
 
 def resolve_faculty_and_ou(affiliation_text: str) -> tuple[str, str]:
     """
-    Z textu WoS afiliácie vráti (plný_názov_fakulty, plný_názov_oddelenia).
+    Z textu WoS afiliácie vráti (plný_anglický_názov_fakulty, plný_názov_oddelenia).
     Oddelenie má bonus +20 voči len-fakultovým zápisom.
     """
     norm = _norm(affiliation_text)
@@ -69,25 +79,10 @@ def resolve_faculty_and_ou(affiliation_text: str) -> tuple[str, str]:
     return "", ""
 
 
-# -----------------------------------------------------------------------
-# Pomocné funkcie pre získanie fakulty a OU z registra – zatiaľ zakomentované.
-# Budú reaktivované keď budú k dispozícii údaje o pracoviskách z remote DB.
-# -----------------------------------------------------------------------
-
-# def _faculty_from_registry(author: InternalAuthor) -> str:
-#     faculty_keywords = ("fakult", "faculty", "ustav", "institute", "logist", "humanit", "multimedia")
-#     if author.parent_name and any(kw in author.parent_name.lower() for kw in faculty_keywords):
-#         return author.parent_name
-#     if author.workplace_name and any(kw in author.workplace_name.lower() for kw in faculty_keywords):
-#         return author.workplace_name
-#     return author.parent_name or author.workplace_name or ""
-
-
-# def _ou_from_registry(author: InternalAuthor) -> str:
-#     faculty_keywords = ("fakult", "faculty", "univers", "rektora")
-#     if author.workplace_name and not any(kw in author.workplace_name.lower() for kw in faculty_keywords):
-#         return author.workplace_name
-#     return ""
+def _registry_faculty_to_english(czech_faculty: str) -> str:
+    """Prevedie český názov fakulty na anglický cez faculty_id. Ak nenájde, vráti pôvodný."""
+    fid = CZECH_FACULTY_MAP_NORM.get(_norm(czech_faculty))
+    return FACULTIES.get(fid, czech_faculty) if fid else czech_faculty
 
 
 # -----------------------------------------------------------------------
@@ -99,33 +94,38 @@ def process_record(
     wos_aff_arr:     list[str] | None,
     dc_authors_arr:  list[str] | None,
     registry:        list[InternalAuthor],
-    normalize:       bool = False,
+    normalize:       bool          = False,
+    remote_engine:   Engine | None = None,
 ) -> dict:
 
     result: dict = {
         "resource_id":                     resource_id,
-        "heuristic_status":                HeuristicStatus.ERROR,
-        "heuristic_version":               HEURISTIC_VERSION,
-        "heuristic_processed_at":          datetime.now(timezone.utc),
-        "needs_llm":                       False,
-        "dc_contributor_author":           list(dc_authors_arr) if dc_authors_arr else None,
-        "utb_contributor_internalauthor":  None,
-        "utb_faculty":                     None,
-        "utb_ou":                          None,
-        "flags":                           {},
+        "author_heuristic_status":         HeuristicStatus.ERROR,
+        "author_heuristic_version":        HEURISTIC_VERSION,
+        "author_heuristic_processed_at":   datetime.now(timezone.utc),
+        "author_needs_llm":                False,
+        "author_dc_names":                 list(dc_authors_arr) if dc_authors_arr else None,
+        "author_internal_names":           None,
+        "author_faculty":                  None,
+        "author_ou":                       None,
+        "author_flags":                    {},
     }
 
     try:
         has_wos = bool(wos_aff_arr and any(x for x in wos_aff_arr if x))
 
         if has_wos:
-            matched_authors:   list[str] = []
-            matched_faculties: list[str] = []
-            matched_ous:       list[str] = []
-            unmatched_utb:     list[str] = []
-            warnings:          list[str] = []
-            needs_llm:         bool      = False
-            seen_authors:      set[str]  = set()
+            # ------------------------------------------------------------------
+            # Path A: WoS afiliácia
+            # ------------------------------------------------------------------
+            matched_authors:    list[str]  = []
+            matched_faculties:  list[str]  = []
+            matched_ous:        list[str]  = []
+            unmatched_utb:      list[str]  = []
+            warnings:           list[str]  = []
+            faculty_mismatches: list[dict] = []
+            needs_llm:          bool       = False
+            seen_authors:       set[str]   = set()
 
             for raw_aff in wos_aff_arr:
                 if not raw_aff:
@@ -150,10 +150,31 @@ def process_record(
                         m = match_author(author_str, registry, settings.author_match_threshold, normalize=normalize)
                         if m.matched and m.author:
                             matched_authors.append(m.author.full_name)
+
+                            # Afiliácia z remote DB pre tohto autora
+                            db_faculties, db_ou = lookup_author_affiliations(
+                                m.author.surname, m.author.firstname, remote_engine
+                            )
+
                             faculty = wos_faculty
-                            # faculty = wos_faculty or _faculty_from_registry(m.author)  # TODO: enable when workplace data available
-                            ou      = wos_ou
-                            # ou = wos_ou or _ou_from_registry(m.author)  # TODO: enable when workplace data available
+
+                            # Validuj WoS fakultu voči remote DB
+                            if wos_faculty and db_faculties:
+                                wos_fid     = FACULTY_ENGLISH_TO_ID.get(wos_faculty)
+                                author_fids = {
+                                    CZECH_FACULTY_MAP_NORM.get(_norm(f))
+                                    for f in db_faculties
+                                } - {None}
+                                if wos_fid and author_fids and wos_fid not in author_fids:
+                                    faculty_mismatches.append({
+                                        "author":             m.author.full_name,
+                                        "wos_faculty":        wos_faculty,
+                                        "registry_faculties": list(db_faculties),
+                                    })
+
+                            # OU: WoS má prednosť, fallback z remote DB
+                            ou = wos_ou or db_ou
+
                             matched_faculties.append(faculty)
                             matched_ous.append(ou)
                         else:
@@ -167,26 +188,34 @@ def process_record(
                 flags[FlagKey.PARSE_WARNINGS] = warnings
             if any("Viac UTB blokov" in w for w in warnings):
                 flags[FlagKey.MULTIPLE_UTB_BLOCKS] = True
+            if faculty_mismatches:
+                flags[FlagKey.WOS_FACULTY_NOT_IN_REGISTRY] = faculty_mismatches
 
             result.update({
-                "heuristic_status":               HeuristicStatus.PROCESSED,
-                "needs_llm":                      needs_llm,
-                "utb_contributor_internalauthor": matched_authors or None,
-                "utb_faculty": list(dict.fromkeys(filter(None, matched_faculties))) or None,
-                "utb_ou":      list(dict.fromkeys(filter(None, matched_ous)))       or None,
-                "flags":       flags,
+                "author_heuristic_status": HeuristicStatus.PROCESSED,
+                "author_needs_llm":        needs_llm,
+                "author_internal_names":   matched_authors or None,
+                "author_faculty": list(dict.fromkeys(filter(None, matched_faculties))) or None,
+                "author_ou":      list(dict.fromkeys(filter(None, matched_ous)))       or None,
+                "author_flags":   flags,
             })
 
         else:
+            # ------------------------------------------------------------------
+            # Path B: Žiadna WoS afiliácia – priamy matching dc.contributor.author
+            # ------------------------------------------------------------------
             if not dc_authors_arr:
-                result["heuristic_status"] = HeuristicStatus.PROCESSED
-                result["flags"] = {FlagKey.NO_WOS_DATA: True}
+                result["author_heuristic_status"] = HeuristicStatus.PROCESSED
+                result["author_flags"] = {FlagKey.NO_WOS_DATA: True}
                 return result
 
-            matched_authors:   list[str] = []
-            matched_faculties: list[str] = []
-            matched_ous:       list[str] = []
-            seen_authors:      set[str]  = set()
+            matched_authors:           list[str]  = []
+            matched_faculties:         list[str]  = []
+            matched_ous:               list[str]  = []
+            ambiguous_faculty_authors: list[dict] = []
+            seen_authors:              set[str]   = set()
+
+            low_confidence_matches: list[dict] = []
 
             for author_str in dc_authors_arr:
                 if not author_str:
@@ -196,31 +225,59 @@ def process_record(
                     continue
                 seen_authors.add(norm_author)
 
-                m = match_author(author_str, registry, settings.author_match_threshold, normalize=normalize)
+                m = match_author(
+                    author_str, registry, settings.author_match_threshold,
+                    normalize=normalize, require_surname_match=True,
+                )
                 if m.matched and m.author:
                     matched_authors.append(m.author.full_name)
-                    matched_faculties.append("")
-                    # matched_faculties.append(_faculty_from_registry(m.author))  # TODO: enable when workplace data available
-                    matched_ous.append("")
-                    # matched_ous.append(_ou_from_registry(m.author))  # TODO: enable when workplace data available
+
+                    if m.match_type == "fuzzy":
+                        low_confidence_matches.append({
+                            "input":   author_str,
+                            "matched": m.author.full_name,
+                            "score":   round(m.score, 4),
+                        })
+
+                    db_faculties, db_ou = lookup_author_affiliations(
+                        m.author.surname, m.author.firstname, remote_engine
+                    )
+
+                    if len(db_faculties) == 1:
+                        faculty = _registry_faculty_to_english(db_faculties[0])
+                    elif len(db_faculties) > 1:
+                        faculty = ""
+                        ambiguous_faculty_authors.append({
+                            "author":    m.author.full_name,
+                            "faculties": list(db_faculties),
+                        })
+                    else:
+                        faculty = ""
+
+                    matched_faculties.append(faculty)
+                    matched_ous.append(db_ou)
+
+            flags_b: dict = {
+                FlagKey.NO_WOS_DATA:         True,
+                FlagKey.MATCHED_UTB_AUTHORS: len(matched_authors),
+            }
+            if ambiguous_faculty_authors:
+                flags_b[FlagKey.MULTIPLE_FACULTIES_AMBIGUOUS] = ambiguous_faculty_authors
+            if low_confidence_matches:
+                flags_b[FlagKey.PATH_B_LOW_CONFIDENCE] = low_confidence_matches
 
             result.update({
-                "heuristic_status":               HeuristicStatus.PROCESSED,
-                # needs_llm: keď budú k dispozícii údaje o pracovisku, obnov pôvodnú logiku:
-                # "needs_llm": any(not f for f in matched_faculties) if matched_authors else False,
-                "needs_llm": False,
-                "utb_contributor_internalauthor": matched_authors or None,
-                "utb_faculty": list(dict.fromkeys(filter(None, matched_faculties))) or None,
-                "utb_ou":      list(dict.fromkeys(filter(None, matched_ous)))       or None,
-                "flags": {
-                    FlagKey.NO_WOS_DATA:         True,
-                    FlagKey.MATCHED_UTB_AUTHORS: len(matched_authors),
-                },
+                "author_heuristic_status": HeuristicStatus.PROCESSED,
+                "author_needs_llm":        False,
+                "author_internal_names":   matched_authors or None,
+                "author_faculty": list(dict.fromkeys(filter(None, matched_faculties))) or None,
+                "author_ou":      list(dict.fromkeys(filter(None, matched_ous)))       or None,
+                "author_flags":   flags_b,
             })
 
     except Exception as exc:
-        result["needs_llm"] = True
-        result["flags"]     = {FlagKey.ERROR: str(exc)}
+        result["author_needs_llm"] = True
+        result["author_flags"]     = {FlagKey.ERROR: str(exc)}
 
     return result
 
@@ -229,7 +286,12 @@ def process_record(
 # Dávkové spracovanie
 # -----------------------------------------------------------------------
 
-def process_batch(rows: list, registry: list[InternalAuthor], normalize: bool = False) -> list[dict]:
+def process_batch(
+    rows:          list,
+    registry:      list[InternalAuthor],
+    normalize:     bool          = False,
+    remote_engine: Engine | None = None,
+) -> list[dict]:
     return [
         process_record(
             resource_id    = row.resource_id,
@@ -237,6 +299,7 @@ def process_batch(rows: list, registry: list[InternalAuthor], normalize: bool = 
             dc_authors_arr = row.dc_authors,
             registry       = registry,
             normalize      = normalize,
+            remote_engine  = remote_engine,
         )
         for row in rows
     ]
@@ -244,25 +307,30 @@ def process_batch(rows: list, registry: list[InternalAuthor], normalize: bool = 
 
 def run_heuristics(
     engine:           Engine | None = None,
+    remote_engine:    Engine | None = None,
     batch_size:       int | None    = None,
     limit:            int           = 0,
     reprocess_errors: bool          = False,
+    reprocess:        bool          = False,
     normalize:        bool          = False,
 ) -> None:
-    engine     = engine or get_local_engine()
-    batch_size = batch_size or settings.heuristics_batch_size
-    schema     = settings.local_schema
-    table      = settings.local_table
-    statuses   = [HeuristicStatus.NOT_PROCESSED]
+    engine        = engine        or get_local_engine()
+    remote_engine = remote_engine or get_remote_engine()
+    batch_size    = batch_size    or settings.heuristics_batch_size
+    schema        = settings.local_schema
+    table         = settings.local_table
+    statuses      = [HeuristicStatus.NOT_PROCESSED]
     if reprocess_errors:
         statuses.append(HeuristicStatus.ERROR)
+    if reprocess:
+        statuses.append(HeuristicStatus.PROCESSED)
 
     registry = get_author_registry(engine)
-    print(f"[INFO] Načítaných interných autorov: {len(registry)}")
+    print(f"[INFO] Načítaných interných autorov z lokálnej DB: {len(registry)}")
 
     with engine.connect() as conn:
         total = conn.execute(
-            text(f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE heuristic_status = ANY(:s)'),
+            text(f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE author_heuristic_status = ANY(:s)'),
             {"s": statuses},
         ).scalar_one()
 
@@ -285,7 +353,7 @@ def run_heuristics(
                            "utb.wos.affiliation"   AS wos_aff,
                            "dc.contributor.author" AS dc_authors
                     FROM "{schema}"."{table}"
-                    WHERE heuristic_status = ANY(:s)
+                    WHERE author_heuristic_status = ANY(:s)
                     ORDER BY resource_id
                     LIMIT :lim
                 """),
@@ -295,33 +363,33 @@ def run_heuristics(
         if not rows:
             break
 
-        updates = process_batch(rows, registry, normalize=normalize)
+        updates = process_batch(rows, registry, normalize=normalize, remote_engine=remote_engine)
 
         update_sql = f"""
             UPDATE "{schema}"."{table}"
             SET
-                flags                          = %s::jsonb,
-                heuristic_status               = %s,
-                heuristic_version              = %s,
-                heuristic_processed_at         = %s,
-                needs_llm                      = %s,
-                dc_contributor_author          = %s,
-                utb_contributor_internalauthor = %s,
-                utb_faculty                    = %s,
-                utb_ou                         = %s
+                author_flags                   = %s::jsonb,
+                author_heuristic_status        = %s,
+                author_heuristic_version       = %s,
+                author_heuristic_processed_at  = %s,
+                author_needs_llm               = %s,
+                author_dc_names                = %s,
+                author_internal_names          = %s,
+                author_faculty                 = %s,
+                author_ou                      = %s
             WHERE resource_id = %s
         """
         params = [
             (
-                json.dumps(u["flags"], ensure_ascii=False),
-                u["heuristic_status"],
-                u["heuristic_version"],
-                u["heuristic_processed_at"],
-                u["needs_llm"],
-                u["dc_contributor_author"],
-                u["utb_contributor_internalauthor"],
-                u["utb_faculty"],
-                u["utb_ou"],
+                json.dumps(u["author_flags"], ensure_ascii=False),
+                u["author_heuristic_status"],
+                u["author_heuristic_version"],
+                u["author_heuristic_processed_at"],
+                u["author_needs_llm"],
+                u["author_dc_names"],
+                u["author_internal_names"],
+                u["author_faculty"],
+                u["author_ou"],
                 u["resource_id"],
             )
             for u in updates
@@ -339,3 +407,81 @@ def run_heuristics(
         print(f"  Spracované: {processed}/{total}")
 
     print(f"[OK] Heuristiky autorov hotové. Spracovaných: {processed}")
+
+
+# -----------------------------------------------------------------------
+# Porovnanie s hodnotami knihovníka
+# -----------------------------------------------------------------------
+
+def _norm_name_set(names: list[str] | None) -> set[str]:
+    """Normalizuje zoznam mien na porovnanie: lowercase, bez diakritiky, komprimované medzery."""
+    from src.authors.registry import _normalize_name
+    if not names:
+        return set()
+    return {_normalize_name(n) for n in names if n and n.strip()}
+
+
+def compare_with_librarian(engine: "Engine | None" = None) -> None:
+    """
+    Porovná author_internal_names (program) vs utb.contributor.internalauthor (knihovník).
+
+    Kategórie:
+      exact      – normalizované množiny sú totožné
+      partial    – prienik neprázdny, ale nie totožný
+      no_overlap – obe neprázdne, prienik prázdny
+      only_prog  – program našiel autorov, knihovník nemá
+      only_lib   – knihovník má autorov, program nenašiel
+      both_empty – oba stĺpce prázdne / null
+    """
+    engine = engine or get_local_engine()
+    schema = settings.local_schema
+    table  = settings.local_table
+
+    with engine.connect() as conn:
+        rows = conn.execute(text(f"""
+            SELECT resource_id,
+                   author_internal_names                  AS prog,
+                   "utb.contributor.internalauthor"       AS lib
+            FROM "{schema}"."{table}"
+            WHERE author_heuristic_status = 'processed'
+        """)).fetchall()
+
+    cats: dict[str, int] = {
+        "exact":      0,
+        "partial":    0,
+        "no_overlap": 0,
+        "only_prog":  0,
+        "only_lib":   0,
+        "both_empty": 0,
+    }
+    total = len(rows)
+
+    for row in rows:
+        prog = _norm_name_set(row.prog)
+        lib  = _norm_name_set(row.lib)
+
+        if not prog and not lib:
+            cats["both_empty"] += 1
+        elif prog and not lib:
+            cats["only_prog"] += 1
+        elif lib and not prog:
+            cats["only_lib"] += 1
+        elif prog == lib:
+            cats["exact"] += 1
+        elif prog & lib:
+            cats["partial"] += 1
+        else:
+            cats["no_overlap"] += 1
+
+    matched = cats["exact"] + cats["partial"]
+    print(f"Spracovaných záznamov (heuristic_status=processed): {total}")
+    print()
+    print(f"  Presná zhoda (exact):          {cats['exact']:>6}  ({100*cats['exact']/total:.1f}%)" if total else "")
+    print(f"  Čiastočná zhoda (partial):     {cats['partial']:>6}  ({100*cats['partial']/total:.1f}%)" if total else "")
+    print(f"  Bez prieniku (no_overlap):     {cats['no_overlap']:>6}  ({100*cats['no_overlap']/total:.1f}%)" if total else "")
+    print(f"  Len program (only_prog):       {cats['only_prog']:>6}  ({100*cats['only_prog']/total:.1f}%)" if total else "")
+    print(f"  Len knihovník (only_lib):      {cats['only_lib']:>6}  ({100*cats['only_lib']/total:.1f}%)" if total else "")
+    print(f"  Oba prázdne (both_empty):      {cats['both_empty']:>6}  ({100*cats['both_empty']/total:.1f}%)" if total else "")
+    print()
+    if total:
+        print(f"  Celkom zhodných (exact+partial): {matched} / {total}  ({100*matched/total:.1f}%)")

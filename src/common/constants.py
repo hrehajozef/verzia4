@@ -32,12 +32,15 @@ class DateLLMStatus:
 
 
 class FlagKey:
-    NO_WOS_DATA           = "no_wos_data"
-    PARSE_WARNINGS        = "wos_parse_warnings"
-    MULTIPLE_UTB_BLOCKS   = "multiple_utb_blocks"
-    UNMATCHED_UTB_AUTHORS = "utb_authors_unmatched"
-    MATCHED_UTB_AUTHORS   = "utb_authors_found_count"
-    ERROR                 = "error"
+    NO_WOS_DATA                  = "no_wos_data"
+    PARSE_WARNINGS               = "wos_parse_warnings"
+    MULTIPLE_UTB_BLOCKS          = "multiple_utb_blocks"
+    UNMATCHED_UTB_AUTHORS        = "utb_authors_unmatched"
+    MATCHED_UTB_AUTHORS          = "utb_authors_found_count"
+    WOS_FACULTY_NOT_IN_REGISTRY  = "wos_faculty_not_in_registry"
+    MULTIPLE_FACULTIES_AMBIGUOUS = "multiple_faculties_ambiguous"
+    PATH_B_LOW_CONFIDENCE        = "path_b_low_confidence_matches"  # fuzzy zhody bez WoS na review
+    ERROR                        = "error"
 
 
 @dataclass(frozen=True)
@@ -48,18 +51,18 @@ class OutputColumn:
 
 
 OUTPUT_COLUMNS: tuple[OutputColumn, ...] = (
-    OutputColumn("flags",                          "JSONB",   "'{}'::jsonb"),
-    OutputColumn("heuristic_status",               "TEXT",    f"'{HeuristicStatus.NOT_PROCESSED}'"),
-    OutputColumn("heuristic_version",              "TEXT"),
-    OutputColumn("heuristic_processed_at",         "TIMESTAMPTZ"),
-    OutputColumn("needs_llm",                      "BOOLEAN", "FALSE"),
-    OutputColumn("dc_contributor_author",          "TEXT[]"),
-    OutputColumn("utb_contributor_internalauthor", "TEXT[]"),
-    OutputColumn("utb_faculty",                    "TEXT[]"),
-    OutputColumn("utb_ou",                         "TEXT[]"),
-    OutputColumn("llm_result",                     "JSONB"),
-    OutputColumn("llm_status",                     "TEXT",    f"'{LLMStatus.NOT_PROCESSED}'"),
-    OutputColumn("llm_processed_at",               "TIMESTAMPTZ"),
+    OutputColumn("author_flags",                   "JSONB",   "'{}'::jsonb"),
+    OutputColumn("author_heuristic_status",        "TEXT",    f"'{HeuristicStatus.NOT_PROCESSED}'"),
+    OutputColumn("author_heuristic_version",       "TEXT"),
+    OutputColumn("author_heuristic_processed_at",  "TIMESTAMPTZ"),
+    OutputColumn("author_needs_llm",               "BOOLEAN", "FALSE"),
+    OutputColumn("author_dc_names",                "TEXT[]"),
+    OutputColumn("author_internal_names",          "TEXT[]"),
+    OutputColumn("author_faculty",                 "TEXT[]"),
+    OutputColumn("author_ou",                      "TEXT[]"),
+    OutputColumn("author_llm_result",              "JSONB"),
+    OutputColumn("author_llm_status",              "TEXT",    f"'{LLMStatus.NOT_PROCESSED}'"),
+    OutputColumn("author_llm_processed_at",        "TIMESTAMPTZ"),
 )
 
 # -----------------------------------------------------------------------
@@ -279,6 +282,28 @@ for dept, fid in DEPARTMENTS.items():
 # Fallback pravidlá pre fakultu (keď nepoznáme konkrétne oddelenie)
 # Zoradené od najšpecifickejších k najvšeobecnejším.
 # -----------------------------------------------------------------------
+# -----------------------------------------------------------------------
+# České názvy fakúlt (z remote DB obd_prac) → faculty_id
+# Normalizovaná verzia pre robustné vyhľadávanie (bez diakritiky, lowercase).
+# Používa sa pri overovaní WoS fakulty voči remote DB registru.
+# -----------------------------------------------------------------------
+CZECH_FACULTY_MAP: dict[str, str] = {
+    "Fakulta technologická":                    "FT",
+    "Fakulta managementu a ekonomiky":          "FAME",
+    "Fakulta aplikované informatiky":           "FAI",
+    "Fakulta logistiky a krizového řízení":     "FLKR",
+    "Fakulta humanitních studií":               "FHS",
+    "Fakulta multimediálních komunikací":       "FMK",
+}
+
+CZECH_FACULTY_MAP_NORM: dict[str, str] = {
+    _norm(k): v for k, v in CZECH_FACULTY_MAP.items()
+}
+
+# Inverzný slovník: anglický názov fakulty → faculty_id
+FACULTY_ENGLISH_TO_ID: dict[str, str] = {v: k for k, v in FACULTIES.items()}
+
+
 FACULTY_KEYWORD_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (
         ("ctr polymer syst", "univ inst", "polymer syst",

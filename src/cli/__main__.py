@@ -2,7 +2,7 @@
 
 Pipeline (odporúčané poradie):
   1. bootstrap           – skopíruje remote tabuľku do lokálnej DB
-  2. import-authors      – importuje interných autorov (remote DB alebo CSV)
+  2. import-authors      – importuje interných autorov z CSV do lokálnej DB
   3. validate-setup      – pridá validation stĺpce (spusti raz)
   4. validate            – validácia metadát (trailing spaces, mojibake, DOI, ...)
   5. dates-setup         – pridá DATE stĺpce (spusti raz)
@@ -58,6 +58,18 @@ def bootstrap(
     run_bootstrap(drop_existing=drop)
 
 
+@app.command(name="migrate-columns")
+def migrate_columns() -> None:
+    """
+    Premenuje staré author stĺpce na nové author_* názvy (jednorazová migrácia).
+
+    Spusti raz ak máš existujúcu DB so starými názvami stĺpcov
+    (flags, heuristic_status, needs_llm, llm_status, ...).
+    """
+    from src.db.setup import rename_legacy_author_columns
+    rename_legacy_author_columns()
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # AUTORI
 # ═══════════════════════════════════════════════════════════════════════
@@ -66,7 +78,7 @@ def bootstrap(
 def import_authors(
     csv_file: Path = typer.Option(
         Path("./data/autori_utb_oficial_utf8.csv"), "--csv",
-        help="CSV súbor s internými autormi (surname;firstname, s hlavičkou).",
+        help="CSV súbor s internými autormi (priezvisko;krstné_meno, s hlavičkou).",
     ),
 ) -> None:
     """
@@ -74,12 +86,9 @@ def import_authors(
 
     Formát CSV: priezvisko;krstné_meno, 1 riadok = 1 osoba, s hlavičkou.
 
-    Príklad:
+    Príklady:
       python -m src.cli import-authors
       python -m src.cli import-authors --csv data/autori_utb_oficial_utf8.csv
-
-    Poznámka: import z remote DB (obd_prac / S_LIDE) je zatiaľ zakomentovaný
-    v src/authors/registry.py – reaktivovať keď budú tabuľky dostupné.
     """
     from src.authors.registry import (
         clear_author_registry_cache,
@@ -126,10 +135,10 @@ def validate(
     revalidate: bool = typer.Option(False, "--revalidate", help="Znovu validuje aj záznamy s existujúcim výsledkom."),
 ) -> None:
     """
-    Validácia kvality metadát (trailing spaces, mojibake, DOI formát, interní autori).
+    Validácia kvality metadát + návrhy opráv.
 
-    Spúšťa sa pred heuristickým spracovaním. Kontroly interných autorov
-    sú k dispozícii až po spustení heuristics.
+    Kontroly: trailing spaces, mojibake, DOI formát, URL query params, OBDID existencia.
+    Navrhnuté opravy sa uložia do validation_suggested_fixes – spusti 'apply-fixes' na ich aplikovanie.
 
     Príklady:
       python -m src.cli validate
@@ -137,6 +146,27 @@ def validate(
     """
     from src.quality.checks import run_validation
     run_validation(batch_size=batch_size, limit=limit, revalidate=revalidate)
+
+
+@app.command(name="apply-fixes")
+def apply_fixes(
+    preview: bool = typer.Option(False, "--preview", help="Zobraz farebný diff bez zápisu do DB."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Alias pre --preview."),
+    limit:   int  = typer.Option(0,     "--limit",   help="Max počet záznamov (0 = všetky)."),
+) -> None:
+    """
+    Aplikuje navrhnuté opravy z validácie (validation_suggested_fixes) do skutočných stĺpcov.
+
+    Červenou sa zobrazí pôvodná hodnota, zelenou navrhnutá oprava (--preview).
+    Po aplikovaní sa záznamy automaticky označia na re-validáciu.
+
+    Príklady:
+      python -m src.cli apply-fixes --preview
+      python -m src.cli apply-fixes
+      python -m src.cli apply-fixes --limit 50
+    """
+    from src.quality.checks import run_apply_fixes
+    run_apply_fixes(preview=preview, dry_run=dry_run, limit=limit)
 
 
 @app.command(name="validate-status")
@@ -155,11 +185,12 @@ def heuristics_run(
     limit:            int        = typer.Option(0,     "--limit",            help="Max počet záznamov (0 = všetky)."),
     batch_size:       int | None = typer.Option(None,  "--batch-size",       help="Veľkosť dávky."),
     reprocess_errors: bool       = typer.Option(False, "--reprocess-errors", help="Spracovať aj záznamy so statusom error."),
+    reprocess:        bool       = typer.Option(False, "--reprocess",        help="Spracovať aj už spracované záznamy (status processed)."),
     normalize:        bool       = typer.Option(False, "--normalize",        help="Porovnávať mená aj na normalizovaných hodnotách (bez diakritiky, lowercase) + fuzzy. Štandardne vypnuté – porovnáva sa na surových hodnotách."),
 ) -> None:
     """Heuristické spracovanie mien a afiliácií autorov."""
     from src.authors.heuristics import run_heuristics
-    run_heuristics(batch_size=batch_size, limit=limit, reprocess_errors=reprocess_errors, normalize=normalize)
+    run_heuristics(batch_size=batch_size, limit=limit, reprocess_errors=reprocess_errors, reprocess=reprocess, normalize=normalize)
 
 
 @app.command(name="heuristics-llm")
@@ -171,6 +202,17 @@ def heuristics_llm(
     """LLM spracovanie autorov (záznamy s needs_llm=TRUE, po heuristikách)."""
     from src.llm.tasks.authors import run_llm
     run_llm(batch_size=batch_size, limit=limit, provider=provider)
+
+
+@app.command(name="heuristics-compare")
+def heuristics_compare() -> None:
+    """
+    Porovná author_internal_names (program) vs utb.contributor.internalauthor (knihovník).
+
+    Zobrazí štatistiky: presná zhoda, čiastočná zhoda, bez prieniku, len jeden zdroj.
+    """
+    from src.authors.heuristics import compare_with_librarian
+    compare_with_librarian()
 
 
 @app.command(name="heuristics-status")
@@ -185,23 +227,23 @@ def status() -> None:
             text(f'SELECT COUNT(*) FROM "{schema}"."{table}"')
         ).scalar_one()
         with_authors = conn.execute(
-            text(f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE utb_contributor_internalauthor IS NOT NULL')
+            text(f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE author_internal_names IS NOT NULL')
         ).scalar_one()
         heuristic_rows = conn.execute(
-            text(f'SELECT heuristic_status, COUNT(*) AS cnt FROM "{schema}"."{table}" GROUP BY heuristic_status ORDER BY cnt DESC')
+            text(f'SELECT author_heuristic_status, COUNT(*) AS cnt FROM "{schema}"."{table}" GROUP BY author_heuristic_status ORDER BY cnt DESC')
         ).fetchall()
         llm_rows = conn.execute(
-            text(f'SELECT llm_status, COUNT(*) AS cnt FROM "{schema}"."{table}" WHERE needs_llm = TRUE GROUP BY llm_status ORDER BY cnt DESC')
+            text(f'SELECT author_llm_status, COUNT(*) AS cnt FROM "{schema}"."{table}" WHERE author_needs_llm = TRUE GROUP BY author_llm_status ORDER BY cnt DESC')
         ).fetchall()
 
     typer.echo(f"Celkom záznamov:      {total}")
     typer.echo(f"So zisteným autorom:  {with_authors}")
     typer.echo("\nHeuristiky (mená):")
     for row in heuristic_rows:
-        typer.echo(f"  {row.heuristic_status}: {row.cnt}")
-    typer.echo("\nLLM (needs_llm=true):")
+        typer.echo(f"  {row.author_heuristic_status}: {row.cnt}")
+    typer.echo("\nLLM (author_needs_llm=true):")
     for row in llm_rows:
-        typer.echo(f"  {row.llm_status}: {row.cnt}")
+        typer.echo(f"  {row.author_llm_status}: {row.cnt}")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -261,30 +303,42 @@ def dates_status() -> None:
 # DEDUPLIKÁCIA
 # ═══════════════════════════════════════════════════════════════════════
 
+@app.command(name="dedup-setup")
+def dedup_setup() -> None:
+    """
+    Vytvorí tabuľku dedup_histoire pre uchovanie histórie pred zlúčením.
+
+    Spusti raz pred prvým spustením deduplicate. Bezpečné spustiť opakovane.
+    """
+    from src.quality.dedup import setup_dedup_table
+    setup_dedup_table()
+
+
 @app.command(name="deduplicate")
 def deduplicate(
-    by:              str   = typer.Option(
+    by:        str   = typer.Option(
         "dc.identifier.doi", "--by",
-        help="Stĺpec pre presnú zhodu (napr. 'dc.identifier.doi', 'dc.title').",
+        help="Stĺpec pre presnú zhodu (napr. 'dc.identifier.doi').",
     ),
-    no_fuzzy:        bool  = typer.Option(False,  "--no-fuzzy",   help="Vypne fuzzy porovnanie."),
-    threshold:       float = typer.Option(0.0,    "--threshold",  help="Jaro-Winkler prah (0 = použije .env / default 0.85)."),
-    dry_run:         bool  = typer.Option(False,  "--dry-run",    help="Iba vypíše výsledky, nezapíše do DB."),
+    no_fuzzy:  bool  = typer.Option(False, "--no-fuzzy",  help="Vypne fuzzy porovnanie."),
+    threshold: float = typer.Option(0.0,   "--threshold", help="Jaro-Winkler prah (0 = .env / default 0.85)."),
+    dry_run:   bool  = typer.Option(False, "--dry-run",   help="Iba vypíše výsledky, nezapíše do DB."),
 ) -> None:
     """
-    Identifikácia a označenie duplikátov.
+    Deduplikácia: nájde a fyzicky zlúči duplikáty, zachová históriu.
 
-    Stratégia:
-      1. Presná zhoda podľa stĺpca --by (case-insensitive)
-      2. Fuzzy: podobnosť titulu + rok ±1 + ISSN/ISBN (ak nie je --no-fuzzy)
+    Stratégie:
+      1. Presná zhoda podľa --by (default: DOI)
+      2. Obsahová zhoda 100% (title+autori+abstrakt) → early_access / merged_type / autoplagiat
+      3. Fuzzy zhoda titulu ≥ threshold (len flag, bez zlúčenia)
 
-    Výsledok sa zapíše do flags['duplicates'] oboch záznamov.
+    Záznamy exact/early_access/merged_type sú fyzicky zlúčené (UPDATE+DELETE),
+    pred tým nakopírované do dedup_histoire. Autoplagiát a fuzzy sú len flagované.
 
     Príklady:
       python -m src.cli deduplicate
-      python -m src.cli deduplicate --by dc.identifier.doi
-      python -m src.cli deduplicate --by dc.title --no-fuzzy
       python -m src.cli deduplicate --dry-run
+      python -m src.cli deduplicate --no-fuzzy
     """
     from src.quality.dedup import run_deduplication
 
@@ -306,45 +360,68 @@ def dedup_status() -> None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# EXPORT
+# NORMALIZÁCIA PUBLISHER / RELATION.ISPARTOF
 # ═══════════════════════════════════════════════════════════════════════
 
-@app.command()
-def export(
-    output:   Path = typer.Option(Path("./data/vysledky_export.csv"), "--output", "-o"),
-    only_llm: bool = typer.Option(False, "--only-llm", help="Exportuj len záznamy kde needs_llm=TRUE."),
-) -> None:
-    """Export výsledkov do CSV."""
-    engine = get_local_engine()
-    schema = settings.local_schema
-    table  = settings.local_table
-
-    query = f"""
-        SELECT resource_id,
-               heuristic_status, needs_llm,
-               utb_contributor_internalauthor,
-               utb_faculty, utb_ou,
-               llm_status, llm_result,
-               utb_date_received, utb_date_reviewed, utb_date_accepted,
-               utb_date_published_online, utb_date_published,
-               date_heuristic_status, date_needs_llm, date_llm_status,
-               validation_status, validation_flags
-        FROM "{schema}"."{table}"
+@app.command(name="journals-setup")
+def journals_setup() -> None:
     """
-    if only_llm:
-        query += " WHERE needs_llm = TRUE"
+    Pridá journal_norm_* stĺpce do lokálnej tabuľky.
 
-    with engine.connect() as conn:
-        result  = conn.execute(text(query))
-        rows    = result.fetchall()
-        columns = list(result.keys())
+    Spusti raz pred prvým spracovaním. Bezpečné spustiť opakovane.
+    """
+    from src.journals.normalizer import setup_journal_columns
+    setup_journal_columns()
 
-    with output.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.writer(handle, delimiter=";")
-        writer.writerow(columns)
-        writer.writerows(rows)
 
-    typer.echo(f"[OK] Exportovaných záznamov: {len(rows)} → {output}")
+@app.command(name="journals-lookup")
+def journals_lookup(
+    limit:     int  = typer.Option(0,     "--limit",     help="Max počet ISSN/ISBN skupín (0 = všetky)."),
+    reprocess: bool = typer.Option(False, "--reprocess", help="Spracovať aj záznamy so statusom no_change/has_proposal."),
+) -> None:
+    """
+    Lookupuje Crossref/OpenAlex (ISSN) a Google Books/OpenLibrary (ISBN),
+    ukladá návrhy normalizácie publisher a relation.ispartof.
+
+    Príklady:
+      python -m src.cli journals-lookup
+      python -m src.cli journals-lookup --limit 20
+      python -m src.cli journals-lookup --reprocess
+    """
+    from src.journals.normalizer import run_journal_lookup
+    run_journal_lookup(limit=limit, reprocess=reprocess)
+
+
+@app.command(name="journals-apply")
+def journals_apply(
+    preview:     bool           = typer.Option(False, "--preview",     help="Zobraziť diff bez zápisu."),
+    interactive: bool           = typer.Option(False, "--interactive", help="Potvrdzovať každú ISSN skupinu zvlášť (y/n)."),
+    limit:       int            = typer.Option(0,     "--limit",       help="Max počet záznamov (0 = všetky)."),
+    issn:        str | None     = typer.Option(None,  "--issn",        help="Spracovať len konkrétnu ISSN/ISBN skupinu."),
+) -> None:
+    """
+    Zobrazí navrhnuté zmeny publisher/ispartof a aplikuje po schválení knihovníkom.
+
+    Módy:
+      --preview      : farebný diff, žiadne zmeny
+      --interactive  : pre každú ISSN skupinu zvlášť y/n
+      (bez flagu)    : zobraziť všetko, jedno spoločné potvrdenie
+
+    Príklady:
+      python -m src.cli journals-apply --preview
+      python -m src.cli journals-apply --interactive
+      python -m src.cli journals-apply --issn 0002-9726 --interactive
+      python -m src.cli journals-apply
+    """
+    from src.journals.normalizer import run_journal_apply
+    run_journal_apply(preview=preview, interactive=interactive, limit=limit, issn_filter=issn)
+
+
+@app.command(name="journals-status")
+def journals_status() -> None:
+    """Štatistiky normalizácie publisher / relation.ispartof."""
+    from src.journals.normalizer import print_journal_status
+    print_journal_status()
 
 
 # ═══════════════════════════════════════════════════════════════════════

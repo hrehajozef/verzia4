@@ -147,12 +147,15 @@ Pre každého autora urč fakultu a oddelenie/ústav.
 7. Ak autor nie je v zozname "Povolené mená", nevypisuj ho – ani ako odhad.
 8. Ak nevieš určiť fakultu alebo oddelenie, použi "".
 9. Žiadne komentáre, markdown, vysvetlenia – iba JSON.
+10. Ak sú WoS mená autorov skrátené (napr. "Novak J" alebo "Novak, J"), porovnaj ich
+    s whitelistom podľa priezviska a inicálky mena. Ak priezvisko + inicálka zodpovedajú,
+    použi PRESNÉ meno z whitelistu (s diakritikou).
 
 ## Príklady oddelení (ukážka)
 {_DEPT_SAMPLE}
 
 ## WoS formát vstupu
-[Priezvisko1, Meno1; Priezvisko2, Meno2] Inštitúcia, Oddelenie, Adresa;
+[Priezvisko1, Meno1; Priezvisko2 M] Inštitúcia, Oddelenie, Adresa;
 [Priezvisko3, Meno3] Iná inštitúcia, Adresa
 
 ## Scopus formát vstupu (bez mien autorov)
@@ -162,18 +165,30 @@ Oddelenie, Fakulta, Inštitúcia, Adresa; Oddelenie2, Fakulta2, Inštitúcia2
 {{"internal_authors":[{{"name":"Novák, Jan","faculty":"Faculty of Technology","ou":"Department of Polymer Engineering"}}]}}
 """
 
-# Preamble pre Ollama konverzačný režim (systém načíta kontext raz, záznamy prichádzajú postupne)
+# Preamble pre Ollama konverzačný režim (KV-cache optimalizácia – načíta sa raz).
+# Príklad musí byť realistický (nie prázdny), aby model videl očakávaný formát odpovede.
 AUTHORS_SETUP_PREAMBLE: list[dict] = [
     {
         "role":    "user",
         "content": (
-            "Rozumieš svojej úlohe? Budem ti posielať záznamy publikácií jeden po jednom. "
-            "Pre každý vrátiš JSON s internými UTB autormi podľa popísaných pravidiel."
+            "=== Záznam resource_id=0 (ukážka) ===\n\n"
+            "WoS afiliácia (obsahuje mená autorov):\n"
+            "[Novak, Jan; Dvorak, Petr] Tomas Bata Univ Zlin, Fac Technol, "
+            "Dept Polymer Engn, Nam TG Masaryka 5555, Zlin 76001, Czech Republic\n\n"
+            "Povolené mená interných autorov UTB:\n"
+            "[\"Novák, Jan\", \"Dvořák, Petr\", \"Svoboda, Karel\"]\n\n"
+            "Vráť JSON objekt obsahujúci kľúč 'internal_authors' "
+            "so zoznamom identifikovaných interných autorov."
         ),
     },
     {
         "role":    "assistant",
-        "content": '{"internal_authors": []}',
+        "content": (
+            '{"internal_authors": ['
+            '{"name": "Novák, Jan", "faculty": "Faculty of Technology", "ou": "Department of Polymer Engineering"}, '
+            '{"name": "Dvořák, Petr", "faculty": "Faculty of Technology", "ou": "Department of Polymer Engineering"}'
+            ']}'
+        ),
     },
 ]
 
@@ -295,55 +310,63 @@ def process_llm_record(
 ) -> dict:
 
     result: dict = {
-        "resource_id":      resource_id,
-        "llm_status":       LLMStatus.ERROR,
-        "llm_result":       None,
-        "llm_processed_at": datetime.now(timezone.utc),
-        "final_authors":    None,
-        "final_faculties":  None,
-        "final_ous":        None,
+        "resource_id":          resource_id,
+        "author_llm_status":    LLMStatus.ERROR,
+        "author_llm_result":    None,
+        "author_llm_processed_at": datetime.now(timezone.utc),
+        "final_authors":        None,
+        "final_faculties":      None,
+        "final_ous":            None,
     }
 
+    unmatched = (flags or {}).get("utb_authors_unmatched", [])
+    candidate_names = _select_candidates(registry, unmatched, max_candidates=80)
+
+    wos_text    = "\n---\n".join(str(i) for i in (wos_aff or []) if i) or None
+    scopus_text = "; ".join(str(i) for i in (scopus_aff or []) if i) or None
+
+    user_msg = build_user_message(
+        resource_id              = resource_id,
+        wos_affiliation          = wos_text,
+        scopus_affiliation       = scopus_text,
+        flags                    = flags or {},
+        allowed_internal_authors = candidate_names,
+    )
+
     raw_output = ""
-    try:
-        unmatched = (flags or {}).get("utb_authors_unmatched", [])
-        candidate_names = _select_candidates(registry, unmatched, max_candidates=80)
+    # 1 retry pre prechodné chyby (nevalidný JSON, sieťová chyba).
+    # ValidationError sa neretriuje – ide o štrukturálny problém odpovede.
+    for attempt in range(2):
+        try:
+            raw_output  = session.ask(user_msg)
+            parsed_dict = parse_llm_json_output(raw_output)
+            llm_result  = LLMResult(**parsed_dict)
+            llm_result  = _filter_by_registry(llm_result, registry)
 
-        wos_text    = "\n---\n".join(str(i) for i in (wos_aff or []) if i) or None
-        scopus_text = "; ".join(str(i) for i in (scopus_aff or []) if i) or None
+            authors   = [e.name    for e in llm_result.internal_authors]
+            faculties = list(dict.fromkeys(filter(None, [e.faculty for e in llm_result.internal_authors])))
+            ous       = list(dict.fromkeys(filter(None, [e.ou      for e in llm_result.internal_authors])))
 
-        user_msg = build_user_message(
-            resource_id              = resource_id,
-            wos_affiliation          = wos_text,
-            scopus_affiliation       = scopus_text,
-            flags                    = flags or {},
-            allowed_internal_authors = candidate_names,
-        )
+            result.update({
+                "author_llm_status":  LLMStatus.PROCESSED,
+                "author_llm_result":  llm_result.model_dump(),
+                "final_authors":      authors   or None,
+                "final_faculties":    faculties or None,
+                "final_ous":          ous       or None,
+            })
+            break  # úspech
 
-        raw_output  = session.ask(user_msg)
-        parsed_dict = parse_llm_json_output(raw_output)
-        llm_result  = LLMResult(**parsed_dict)
-        llm_result  = _filter_by_registry(llm_result, registry)
+        except ValidationError as exc:
+            result["author_llm_status"] = LLMStatus.VALIDATION_ERROR
+            result["author_llm_result"] = {"error": str(exc), "raw": raw_output[:2000]}
+            break  # štrukturálna chyba – retry nepomôže
 
-        authors   = [e.name    for e in llm_result.internal_authors]
-        faculties = list(dict.fromkeys(filter(None, [e.faculty for e in llm_result.internal_authors])))
-        ous       = list(dict.fromkeys(filter(None, [e.ou      for e in llm_result.internal_authors])))
-
-        result.update({
-            "llm_status":       LLMStatus.PROCESSED,
-            "llm_result":       llm_result.model_dump(),
-            "final_authors":    authors   or None,
-            "final_faculties":  faculties or None,
-            "final_ous":        ous       or None,
-        })
-
-    except ValidationError as exc:
-        result["llm_status"] = LLMStatus.VALIDATION_ERROR
-        result["llm_result"] = {"error": str(exc), "raw": raw_output[:2000]}
-
-    except Exception as exc:
-        result["llm_status"] = LLMStatus.ERROR
-        result["llm_result"] = {"error": f"{type(exc).__name__}: {exc}", "raw": raw_output[:500]}
+        except Exception as exc:
+            if attempt == 0:
+                time.sleep(2)
+                continue   # jeden retry
+            result["author_llm_status"] = LLMStatus.ERROR
+            result["author_llm_result"] = {"error": f"{type(exc).__name__}: {exc}", "raw": raw_output[:1000]}
 
     return result
 
@@ -371,7 +394,7 @@ def run_llm(
         total = conn.execute(
             text(
                 f'SELECT COUNT(*) FROM "{schema}"."{table}"'
-                " WHERE needs_llm = TRUE AND llm_status IN (:np, :err)"
+                " WHERE author_needs_llm = TRUE AND author_llm_status IN (:np, :err)"
             ),
             {"np": LLMStatus.NOT_PROCESSED, "err": LLMStatus.ERROR},
         ).scalar_one()
@@ -395,10 +418,10 @@ def run_llm(
                     SELECT resource_id,
                            "utb.wos.affiliation"    AS wos_aff,
                            "utb.scopus.affiliation" AS scopus_aff,
-                           flags
+                           author_flags
                     FROM "{schema}"."{table}"
-                    WHERE needs_llm = TRUE
-                      AND llm_status IN (:np, :err)
+                    WHERE author_needs_llm = TRUE
+                      AND author_llm_status IN (:np, :err)
                     ORDER BY resource_id
                     LIMIT :lim
                 """),
@@ -413,30 +436,30 @@ def run_llm(
                 resource_id = row.resource_id,
                 wos_aff     = row.wos_aff,
                 scopus_aff  = row.scopus_aff,
-                flags       = row.flags or {},
+                flags       = row.author_flags or {},
                 session     = session,
                 registry    = registry,
             )
             for row in rows
         ]
-        errors += sum(1 for u in updates if u["llm_status"] != LLMStatus.PROCESSED)
+        errors += sum(1 for u in updates if u["author_llm_status"] != LLMStatus.PROCESSED)
 
         update_sql = f"""
             UPDATE "{schema}"."{table}"
             SET
-                llm_result                     = %s::jsonb,
-                llm_status                     = %s,
-                llm_processed_at               = %s,
-                utb_contributor_internalauthor = COALESCE(%s, utb_contributor_internalauthor),
-                utb_faculty                    = COALESCE(%s, utb_faculty),
-                utb_ou                         = COALESCE(%s, utb_ou)
+                author_llm_result    = %s::jsonb,
+                author_llm_status    = %s,
+                author_llm_processed_at = %s,
+                author_internal_names = COALESCE(%s, author_internal_names),
+                author_faculty       = COALESCE(%s, author_faculty),
+                author_ou            = COALESCE(%s, author_ou)
             WHERE resource_id = %s
         """
         params = [
             (
-                json.dumps(u["llm_result"], ensure_ascii=False) if u["llm_result"] else None,
-                u["llm_status"],
-                u["llm_processed_at"],
+                json.dumps(u["author_llm_result"], ensure_ascii=False) if u["author_llm_result"] else None,
+                u["author_llm_status"],
+                u["author_llm_processed_at"],
                 u["final_authors"],
                 u["final_faculties"],
                 u["final_ous"],

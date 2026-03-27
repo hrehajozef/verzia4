@@ -176,9 +176,9 @@ def _create_indexes(local_engine: Engine) -> None:
     table = settings.local_table
     schema = settings.local_schema
     index_sql = [
-        f'CREATE INDEX IF NOT EXISTS idx_{table}_heuristic_status ON "{schema}"."{table}" (heuristic_status)',
-        f'CREATE INDEX IF NOT EXISTS idx_{table}_needs_llm ON "{schema}"."{table}" (needs_llm) WHERE needs_llm = TRUE',
-        f'CREATE INDEX IF NOT EXISTS idx_{table}_llm_status ON "{schema}"."{table}" (llm_status)',
+        f'CREATE INDEX IF NOT EXISTS idx_{table}_author_heuristic_status ON "{schema}"."{table}" (author_heuristic_status)',
+        f'CREATE INDEX IF NOT EXISTS idx_{table}_author_needs_llm ON "{schema}"."{table}" (author_needs_llm) WHERE author_needs_llm = TRUE',
+        f'CREATE INDEX IF NOT EXISTS idx_{table}_author_llm_status ON "{schema}"."{table}" (author_llm_status)',
     ]
     with local_engine.begin() as conn:
         for sql in index_sql:
@@ -234,6 +234,51 @@ def _copy_data(remote_engine: Engine, local_engine: Engine, columns: list[dict])
         copied += len(rows)
         speed = copied / max(time.time() - started, 1)
         print(f"  Skopírované: {copied}/{total} | {speed:.0f} riadkov/s")
+
+
+def rename_legacy_author_columns(local_engine: Engine | None = None) -> None:
+    """
+    Premenuje staré názvy stĺpcov (pred refactoringom) na nové author_* názvy.
+    Bezpečné spustiť opakovane – stĺpce sa premenujú len ak ešte existujú pod starým názvom.
+    """
+    local_engine = local_engine or get_local_engine()
+    schema = settings.local_schema
+    table  = settings.local_table
+
+    renames = [
+        ("flags",                          "author_flags"),
+        ("heuristic_status",               "author_heuristic_status"),
+        ("heuristic_version",              "author_heuristic_version"),
+        ("heuristic_processed_at",         "author_heuristic_processed_at"),
+        ("needs_llm",                      "author_needs_llm"),
+        ("dc_contributor_author",          "author_dc_names"),
+        ("utb_contributor_internalauthor", "author_internal_names"),
+        ("utb_faculty",                    "author_faculty"),
+        ("utb_ou",                         "author_ou"),
+        ("llm_result",                     "author_llm_result"),
+        ("llm_status",                     "author_llm_status"),
+        ("llm_processed_at",               "author_llm_processed_at"),
+    ]
+
+    existing = {
+        col["name"]
+        for col in inspect(local_engine).get_columns(table, schema=schema)
+    }
+
+    renamed = 0
+    with local_engine.begin() as conn:
+        for old_name, new_name in renames:
+            if old_name in existing and new_name not in existing:
+                conn.execute(text(
+                    f'ALTER TABLE "{schema}"."{table}" RENAME COLUMN "{old_name}" TO "{new_name}"'
+                ))
+                print(f"  Premenovaný: {old_name} → {new_name}")
+                renamed += 1
+
+    if renamed:
+        print(f"[OK] Premenovaných {renamed} stĺpcov.")
+    else:
+        print("[INFO] Žiadne stĺpce na premenovanie (už sú aktuálne alebo tabuľka neexistuje).")
 
 
 def run_bootstrap(drop_existing: bool = False) -> None:

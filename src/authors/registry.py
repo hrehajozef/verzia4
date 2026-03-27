@@ -1,27 +1,33 @@
 """Import a matching interných autorov UTB.
 
-Zdroj autorov: CSV súbor (surname;firstname, s hlavičkou, 1 riadok = 1 osoba).
+Zdroj autorov pre matching: CSV súbor → lokálna tabuľka utb_internal_authors.
+Import: load_authors_from_csv() → import_authors_to_db() (príkaz import-authors).
 
-Matching prebieha štandardne na PRESNÝCH surových menách s diakritikou.
+Matching prebieha na PRESNÝCH surových menách s diakritikou.
 Voliteľne (normalize=True) sa zapínajú normalizované zhody + fuzzy Jaro-Winkler.
 
-Načítanie z remote DB (tabuľky obd_prac, obd_lideprac, S_LIDE) je
-zakomentované – bude k dispozícii keď budú prístupné remote tabuľky.
+Afiliácie (fakulta, ústav) sa zisťujú osobitne pre každého nájdeného autora
+priamo z remote DB (lookup_author_affiliations). WoS má prednosť, remote DB
+je fallback.
 """
 
 from __future__ import annotations
 
+import csv as _csv
 import re
 import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import jellyfish
 from sqlalchemy import text
-from sqlalchemy.engine import Engine
 
 from src.config.settings import settings
-from src.db.engines import get_local_engine
+from src.db.engines import get_local_engine, get_remote_engine
+
+if TYPE_CHECKING:
+    from sqlalchemy.engine import Engine
 
 
 # -----------------------------------------------------------------------
@@ -67,12 +73,11 @@ def _normalize_name(name: str) -> str:
 
 
 # -----------------------------------------------------------------------
-# Načítanie autorov z CSV (surname;firstname, 1 riadok = 1 osoba, s hlavičkou)
+# Načítanie autorov z CSV → lokálna DB
 # -----------------------------------------------------------------------
 
 def load_authors_from_csv(csv_path: str | Path) -> list[InternalAuthor]:
-    """Načíta autorov z CSV súboru. Formát: priezvisko;krstné_meno, 1 riadok = 1 osoba."""
-    import csv as _csv
+    """Načíta autorov z CSV súboru. Formát: priezvisko;krstné_meno, s hlavičkou."""
     path    = Path(csv_path)
     authors: list[InternalAuthor] = []
     seen:    set[str]             = set()
@@ -94,69 +99,8 @@ def load_authors_from_csv(csv_path: str | Path) -> list[InternalAuthor]:
     return authors
 
 
-# -----------------------------------------------------------------------
-# Načítanie autorov zo školskej remote DB – zatiaľ nedostupné
-# -----------------------------------------------------------------------
-
-# _REMOTE_QUERY = text("""
-#     SELECT
-#         l.jmeno        AS firstname,
-#         l.prijmeni     AS surname,
-#         o.kodprac      AS workplace_code,
-#         o.nazev        AS workplace_name,
-#         COALESCE(p.kodprac, '')  AS parent_code,
-#         COALESCE(p.nazev,   '')  AS parent_name
-#     FROM obd_prac         AS o
-#     JOIN obd_lideprac     AS ol ON o.id         = ol.idprac
-#     JOIN "S_LIDE"         AS l  ON ol.idlide    = l.id
-#     LEFT JOIN obd_prac    AS p  ON o.id_nadrizene = p.id
-#     WHERE l.jmeno    IS NOT NULL
-#       AND l.prijmeni IS NOT NULL
-#       AND l.jmeno    <> ''
-#       AND l.prijmeni <> ''
-# """)
-#
-#
-# def load_authors_from_remote_db(
-#     remote_engine: Engine | None = None,
-# ) -> list[InternalAuthor]:
-#     """
-#     Načíta zamestnancov UTB zo školskej DB.
-#     Jedna osoba môže mať viac pracovísk → viac záznamov.
-#     """
-#     engine  = remote_engine or get_remote_engine()
-#     authors: list[InternalAuthor] = []
-#     seen:    set[str]             = set()
-#
-#     with engine.connect() as conn:
-#         rows = conn.execute(_REMOTE_QUERY).fetchall()
-#
-#     for row in rows:
-#         firstname = (row.firstname or "").strip()
-#         surname   = (row.surname   or "").strip()
-#         if not surname:
-#             continue
-#
-#         workplace_code = (row.workplace_code or "").strip()
-#         # workplace_name = (row.workplace_name or "").strip()
-#         # parent_code    = (row.parent_code    or "").strip()
-#         # parent_name    = (row.parent_name    or "").strip()
-#
-#         key = f"{surname}|{firstname}|{workplace_code}"
-#         if key in seen:
-#             continue
-#         seen.add(key)
-#
-#         authors.append(InternalAuthor(surname=surname, firstname=firstname))
-#
-#     return authors
-
-
-# -----------------------------------------------------------------------
-# DB tabuľka pre lokálne uloženie registra – len surname a firstname
-# -----------------------------------------------------------------------
-
-def setup_authors_table(engine: Engine) -> None:
+def setup_authors_table(engine: "Engine") -> None:
+    """Zmaže a vytvorí tabuľku utb_internal_authors."""
     ddl = """
     DROP TABLE IF EXISTS utb_internal_authors CASCADE;
     CREATE TABLE utb_internal_authors (
@@ -170,7 +114,8 @@ def setup_authors_table(engine: Engine) -> None:
         conn.execute(text(ddl))
 
 
-def import_authors_to_db(authors: list[InternalAuthor], engine: Engine) -> int:
+def import_authors_to_db(authors: list[InternalAuthor], engine: "Engine") -> int:
+    """Naplní tabuľku utb_internal_authors zoznamom autorov."""
     insert_sql = text("""
         INSERT INTO utb_internal_authors (surname, firstname)
         VALUES (:surname, :firstname)
@@ -185,7 +130,7 @@ def import_authors_to_db(authors: list[InternalAuthor], engine: Engine) -> int:
 
 
 # -----------------------------------------------------------------------
-# Registra cache
+# Registra cache (načítava z lokálnej DB)
 # -----------------------------------------------------------------------
 
 _AUTHOR_REGISTRY: list[InternalAuthor] = []
@@ -195,14 +140,15 @@ def clear_author_registry_cache() -> None:
     _AUTHOR_REGISTRY.clear()
 
 
-def get_author_registry(engine: Engine | None = None) -> list[InternalAuthor]:
+def get_author_registry(engine: "Engine | None" = None) -> list[InternalAuthor]:
+    """Vráti (prípadne načíta) zoznam interných autorov z lokálnej DB. Výsledok sa kešuje."""
     if _AUTHOR_REGISTRY:
         return _AUTHOR_REGISTRY
 
     with (engine or get_local_engine()).connect() as conn:
-        rows = conn.execute(text("""
-            SELECT surname, firstname FROM utb_internal_authors
-        """)).fetchall()
+        rows = conn.execute(text(
+            "SELECT surname, firstname FROM utb_internal_authors"
+        )).fetchall()
 
     _AUTHOR_REGISTRY.extend(
         InternalAuthor(surname=r.surname, firstname=r.firstname or "")
@@ -212,14 +158,134 @@ def get_author_registry(engine: Engine | None = None) -> list[InternalAuthor]:
 
 
 # -----------------------------------------------------------------------
+# Per-autor lookup afiliácií z remote DB
+# -----------------------------------------------------------------------
+
+def _is_faculty_level(name: str) -> bool:
+    """Vráti True ak názov pracoviska je fakulta."""
+    low = name.lower()
+    return "fakult" in low or "faculty" in low
+
+
+def _is_top_level(name: str) -> bool:
+    """Vráti True ak pracovisko je rektorát / celouniverzitné."""
+    low = name.lower()
+    return any(kw in low for kw in ("universit", "univerzit", "rektora", "rektorát"))
+
+
+def _is_real_ou(name: str) -> bool:
+    """Vráti True ak pracovisko je skutočný ústav (nie fakulta ani rektorát)."""
+    return bool(name) and not _is_faculty_level(name) and not _is_top_level(name)
+
+
+def _extract_person_data(
+    workplaces: list[tuple[str, str]],
+) -> tuple[tuple[str, ...], str]:
+    """
+    Z viacerých pracovísk jednej osoby určí (fakulty, najlepší_ústav).
+
+    Priorita pre ústav:
+      1. Pracovisko = skutočný ústav, rodič = fakulta
+      2. Priame priradenie k fakulte
+      3. Nič → ("", "")
+
+    Vracia: (tuple českých názvov fakúlt, český názov ústavu)
+    """
+    faculties: set[str]  = set()
+    ou_candidates: list[str] = []
+
+    for workplace_name, parent_name in workplaces:
+        if _is_faculty_level(workplace_name):
+            faculties.add(workplace_name.strip())
+
+        if (
+            _is_real_ou(workplace_name)
+            and parent_name
+            and _is_faculty_level(parent_name)
+        ):
+            faculties.add(parent_name.strip())
+            ou_candidates.append(workplace_name.strip())
+
+    best_ou = max(ou_candidates, key=len) if ou_candidates else ""
+    return tuple(sorted(faculties)), best_ou
+
+
+_REMOTE_SCHEMA = settings.remote_schema
+
+_AFFILIATION_CACHE: dict[tuple[str, str], tuple[tuple[str, ...], str]] = {}
+
+
+def clear_affiliation_cache() -> None:
+    _AFFILIATION_CACHE.clear()
+
+
+def lookup_author_affiliations(
+    surname:       str,
+    firstname:     str,
+    remote_engine: "Engine | None" = None,
+) -> tuple[tuple[str, ...], str]:
+    """
+    Vyhľadá fakulty a ústav konkrétneho autora v remote DB.
+
+    Výsledky sa kešujú pre celý beh pipeline.
+    Vracia: (tuple českých názvov fakúlt, český názov ústavu)
+    """
+    key = (surname, firstname)
+    if key in _AFFILIATION_CACHE:
+        return _AFFILIATION_CACHE[key]
+
+    engine = remote_engine or get_remote_engine()
+    s      = _REMOTE_SCHEMA
+    sql    = text(f"""
+        SELECT
+            o.nazev        AS workplace_name,
+            COALESCE(p.nazev, '') AS parent_name
+        FROM "{s}".obd_prac     AS o
+        JOIN "{s}".obd_lideprac AS ol ON o.id           = ol.idprac
+        JOIN "{s}".s_lide       AS l  ON ol.idlide      = l.id
+        LEFT JOIN "{s}".obd_prac AS p ON o.id_nadrizene = p.id
+        WHERE l.prijmeni = :surname
+          AND l.jmeno    = :firstname
+    """)
+
+    with engine.connect() as conn:
+        rows = conn.execute(sql, {"surname": surname, "firstname": firstname}).fetchall()
+
+    if not rows:
+        result: tuple[tuple[str, ...], str] = ((), "")
+    else:
+        workplaces = list({
+            (r.workplace_name or "", r.parent_name or "")
+            for r in rows
+        })
+        result = _extract_person_data(workplaces)
+
+    _AFFILIATION_CACHE[key] = result
+    return result
+
+
+# -----------------------------------------------------------------------
 # Matching
 # -----------------------------------------------------------------------
 
+def _extract_surname_norm(name: str) -> str:
+    """
+    Extrahuje a normalizuje priezvisko z mena.
+    Formát 'Priezvisko, Meno' → 'priezvisko'.
+    Formát 'M. Priezvisko' (bez čiarky) → posledné slovo.
+    """
+    if "," in name:
+        return _normalize_name(name.split(",")[0].strip())
+    parts = name.strip().split()
+    return _normalize_name(parts[-1]) if parts else _normalize_name(name)
+
+
 def match_author(
-    candidate_name: str,
-    registry:       list[InternalAuthor],
-    threshold:      float = 0.85,
-    normalize:      bool  = False,
+    candidate_name:       str,
+    registry:             list[InternalAuthor],
+    threshold:            float = 0.85,
+    normalize:            bool  = False,
+    require_surname_match: bool = False,
 ) -> MatchResult:
     """
     Porovná kandidátske meno s registrom interných autorov.
@@ -232,20 +298,33 @@ def match_author(
         1. Presná zhoda s diakritikou
         2. Presná zhoda normalizovaná ('novak, jan' == 'novak, jan')
         3. Fuzzy Jaro-Winkler na NORMALIZOVANÝCH menách
+
+    require_surname_match=True:
+        Pred fuzzy matching sa registre filtrujú tak, aby normalizované priezvisko
+        kandidáta presne zodpovedalo priezvisku z registra.
+        Eliminuje falošné pozitíva v Path B (kde niet WoS scoping).
+        Presné zhody (exact_diacritic / exact_normalized) nie sú touto voľbou dotknuté.
     """
     if not candidate_name or not candidate_name.strip():
         return MatchResult(input_name=candidate_name, matched=False)
 
-    # --- Krok 1: Presná zhoda s diakritikou (vždy aktívna) ---
+    # --- Krok 1: Presná zhoda s diakritikou (vždy aktívna, bez surname filtra) ---
     for a in registry:
         if a.full_name == candidate_name or a.full_name_reversed == candidate_name:
             return MatchResult(candidate_name, True, a, 1.0, "exact_diacritic")
+
+    # Pre fuzzy kroky: ak require_surname_match, predfiltrovanie na zhodné priezvisko
+    if require_surname_match:
+        candidate_sn = _extract_surname_norm(candidate_name)
+        fuzzy_pool   = [a for a in registry if _extract_surname_norm(a.full_name) == candidate_sn]
+    else:
+        fuzzy_pool = registry
 
     if normalize:
         norm_candidate = _normalize_name(candidate_name)
 
         # --- Krok 2: Presná zhoda normalizovaná ---
-        for a in registry:
+        for a in registry:   # prechádza celý register – exact match ignoruje surname filter
             if _normalize_name(a.full_name) == norm_candidate:
                 return MatchResult(candidate_name, True, a, 1.0, "exact_normalized")
 
@@ -253,7 +332,7 @@ def match_author(
         best_score  = 0.0
         best_author: InternalAuthor | None = None
         seen_norms: set[str] = set()
-        for author in registry:
+        for author in fuzzy_pool:
             norm_a = _normalize_name(author.full_name)
             if norm_a in seen_norms:
                 continue
@@ -272,7 +351,7 @@ def match_author(
         best_score  = 0.0
         best_author: InternalAuthor | None = None
         seen_names: set[str] = set()
-        for author in registry:
+        for author in fuzzy_pool:
             raw_a = author.full_name
             if raw_a in seen_names:
                 continue

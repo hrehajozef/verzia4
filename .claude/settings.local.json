@@ -9,7 +9,18 @@
       "Bash(cd \"C:/Users/jozef/School/diplomovka/git_repo/verzia4\" && uv run pytest --tb=short -q 2>&1 | tail -10)",
       "Bash(cd \"C:/Users/jozef/School/diplomovka/git_repo/verzia4\" && uv run pytest --tb=short -q 2>&1 | tail -12)",
       "Bash(python -m pytest --version)",
-      "Bash(uv --version)"
+      "Bash(uv --version)",
+      "Bash(python -c \":*)",
+      "Bash(python -m src.cli validate --limit 5)",
+      "Bash(python -m src.cli validate --limit 3)",
+      "Bash(python -m src.cli --help)",
+      "Read(//mnt/c/Users/jozef/School/diplomovka/git_repo/**)",
+      "Bash(uv add:*)",
+      "mcp__ide__getDiagnostics",
+      "Bash(uv run:*)",
+      "Bash(python -m src.cli validate)",
+      "Bash(uv sync:*)",
+      "Bash(grep -v \";;$\" data/issn_duplicates.csv)"
     ]
   }
 }
