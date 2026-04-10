@@ -108,6 +108,12 @@ class Settings:
         default_factory=lambda: _get_float("LLM_RETRY_BASE_DELAY", 1.5)
     )
 
+    flask_secret_key: str = field(
+        default_factory=lambda: _get_str("FLASK_SECRET_KEY", "dev-secret-change-in-production")
+    )
+    web_port: int = field(default_factory=lambda: _get_int("WEB_PORT", 5000))
+    web_debug: bool = field(default_factory=lambda: _get_str("WEB_DEBUG", "false").lower() == "true")
+
     @property
     def remote_db_url(self) -> str:
         return (

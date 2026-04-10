@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+# Názov medzitabuľky pre výstupy pipeline (heuristiky, LLM, validácia, dátumy, journaly).
+# Pipeline píše SEM, nie do utb_metadata_arr.
+QUEUE_TABLE = "utb_processing_queue"
+
 
 class HeuristicStatus:
     NOT_PROCESSED = "not_processed"

@@ -9,7 +9,7 @@ import time
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
-from src.common.constants import OUTPUT_COLUMNS
+from src.common.constants import OUTPUT_COLUMNS, QUEUE_TABLE
 from src.config.settings import settings
 from src.db.engines import get_local_engine, get_remote_engine
 
@@ -234,6 +234,111 @@ def _copy_data(remote_engine: Engine, local_engine: Engine, columns: list[dict])
         copied += len(rows)
         speed = copied / max(time.time() - started, 1)
         print(f"  Skopírované: {copied}/{total} | {speed:.0f} riadkov/s")
+
+
+def setup_processing_queue(local_engine: Engine | None = None) -> None:
+    """
+    Vytvorí tabuľku utb_processing_queue pre výstupy pipeline.
+
+    Táto tabuľka je medzitabuľka medzi pipelineom a webovou aplikáciou.
+    Pipeline sem zapisuje výsledky heuristík, LLM, validácie, dátumov a normalizácie.
+    Knihovník cez webovú aplikáciu tieto navrhnuté hodnoty kontroluje a schvaľuje.
+
+    Bezpečné spustiť opakovane (CREATE TABLE IF NOT EXISTS).
+    """
+    local_engine = local_engine or get_local_engine()
+    schema = settings.local_schema
+    queue  = QUEUE_TABLE
+
+    ddl = f"""
+        CREATE TABLE IF NOT EXISTS "{schema}"."{queue}" (
+            resource_id BIGINT PRIMARY KEY,
+
+            -- Autor – heuristiky
+            author_flags                   JSONB        DEFAULT '{{}}',
+            author_heuristic_status        TEXT         DEFAULT 'not_processed',
+            author_heuristic_version       TEXT,
+            author_heuristic_processed_at  TIMESTAMPTZ,
+            author_needs_llm               BOOLEAN      DEFAULT FALSE,
+            author_dc_names                TEXT[],
+            author_internal_names          TEXT[],
+            author_faculty                 TEXT[],
+            author_ou                      TEXT[],
+
+            -- Autor – LLM
+            author_llm_result              JSONB,
+            author_llm_status              TEXT         DEFAULT 'not_processed',
+            author_llm_processed_at        TIMESTAMPTZ,
+
+            -- Validácia
+            validation_status              TEXT         DEFAULT 'not_checked',
+            validation_flags               JSONB        DEFAULT '{{}}',
+            validation_suggested_fixes     JSONB        DEFAULT '{{}}',
+            validation_version             TEXT,
+            validation_checked_at          TIMESTAMPTZ,
+
+            -- Dátumy – heuristiky
+            utb_date_received              DATE,
+            utb_date_reviewed              DATE,
+            utb_date_accepted              DATE,
+            utb_date_published_online      DATE,
+            utb_date_published             DATE,
+            utb_date_extra                 JSONB,
+            date_heuristic_status          TEXT         DEFAULT 'not_processed',
+            date_needs_llm                 BOOLEAN      DEFAULT FALSE,
+            date_flags                     JSONB        DEFAULT '{{}}',
+            date_heuristic_version         TEXT,
+            date_processed_at              TIMESTAMPTZ,
+
+            -- Dátumy – LLM
+            date_llm_status                TEXT         DEFAULT 'not_processed',
+            date_llm_processed_at          TIMESTAMPTZ,
+            date_llm_result                TEXT,
+
+            -- Normalizácia journalov
+            journal_norm_status            TEXT         DEFAULT 'not_processed',
+            journal_norm_proposed_publisher TEXT,
+            journal_norm_proposed_ispartof TEXT,
+            journal_norm_api_source        TEXT,
+            journal_norm_issn_key          TEXT,
+            journal_norm_version           TEXT,
+            journal_norm_processed_at      TIMESTAMPTZ,
+
+            -- Workflow knihovníka
+            librarian_checked_at           TIMESTAMPTZ[],
+            created_at                     TIMESTAMPTZ  DEFAULT now(),
+            updated_at                     TIMESTAMPTZ  DEFAULT now()
+        )
+    """
+
+    print(f"[SETUP] Vytváram tabuľku {schema}.{queue}...")
+    with local_engine.begin() as conn:
+        conn.execute(text(ddl))
+        # Index pre rýchle filtrovanie neskontrolovaných záznamov
+        conn.execute(text(f"""
+            CREATE INDEX IF NOT EXISTS idx_{queue}_librarian_checked
+            ON "{schema}"."{queue}" (librarian_checked_at)
+            WHERE librarian_checked_at IS NULL
+        """))
+        conn.execute(text(f"""
+            CREATE INDEX IF NOT EXISTS idx_{queue}_author_status
+            ON "{schema}"."{queue}" (author_heuristic_status)
+        """))
+        conn.execute(text(f"""
+            CREATE INDEX IF NOT EXISTS idx_{queue}_date_status
+            ON "{schema}"."{queue}" (date_heuristic_status)
+        """))
+
+    # Naplní queue riadkami pre všetky existujúce resource_id z hlavnej tabuľky
+    main_table = settings.local_table
+    with local_engine.begin() as conn:
+        inserted = conn.execute(text(f"""
+            INSERT INTO "{schema}"."{queue}" (resource_id)
+            SELECT resource_id FROM "{schema}"."{main_table}"
+            ON CONFLICT (resource_id) DO NOTHING
+        """)).rowcount
+
+    print(f"[OK] {queue} pripravená. Nových riadkov: {inserted}")
 
 
 def rename_legacy_author_columns(local_engine: Engine | None = None) -> None:

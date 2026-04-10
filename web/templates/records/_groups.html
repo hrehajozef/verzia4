@@ -1,0 +1,54 @@
+{% for group in group_list %}
+<section class="record-group mb-4" id="group-{{ group.key }}">
+  <h5 class="group-heading d-flex align-items-center gap-2">
+    <span class="badge bg-utb-light text-dark">{{ group.count }}</span>
+    {{ group.label }}
+  </h5>
+
+  {% if group.records %}
+  <div class="table-responsive">
+    <table class="table table-hover table-sm align-middle">
+      <thead class="table-light">
+        <tr>
+          <th>Názov</th>
+          <th>Autori</th>
+          <th>Rok</th>
+          <th>Časopis</th>
+          <th>Vol/Iss</th>
+          <th>Zdroj</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for rec in group.records %}
+        <tr class="record-row" style="cursor:pointer"
+            onclick="window.location='/record/{{ rec.resource_id }}'">
+          <td>
+            <a href="/record/{{ rec.resource_id }}" class="text-decoration-none text-dark">
+              {{ rec.title or '(bez názvu)' }}
+            </a>
+          </td>
+          <td class="text-muted small">
+            {% if rec.authors %}
+              {{ rec.authors[:2] | join('; ') }}{% if rec.authors|length > 2 %} …{% endif %}
+            {% endif %}
+          </td>
+          <td class="text-nowrap">{{ rec.year or '—' }}</td>
+          <td class="small">{{ rec.journal or '—' }}</td>
+          <td class="text-nowrap small">
+            {% if rec.volume %}{{ rec.volume }}{% if rec.issue %}/{{ rec.issue }}{% endif %}{% else %}—{% endif %}
+          </td>
+          <td>
+            {% if rec.has_wos %}<span class="badge bg-primary me-1">WoS</span>{% endif %}
+            {% if rec.has_scopus %}<span class="badge bg-info text-dark me-1">Scopus</span>{% endif %}
+            {% if rec.has_riv %}<span class="badge bg-success me-1">RIV</span>{% endif %}
+          </td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <p class="text-muted small fst-italic">Žiadne záznamy v tejto kategórii.</p>
+  {% endif %}
+</section>
+{% endfor %}

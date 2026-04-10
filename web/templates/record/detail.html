@@ -1,0 +1,409 @@
+{% extends "base.html" %}
+
+{% block title %}Detail záznamu {{ resource_id }} – UTB Metadata Review{% endblock %}
+
+{% block extra_css %}
+<link rel="stylesheet" href="{{ url_for('static', filename='css/diff.css') }}">
+<style>
+/* ── Layout ── */
+.detail-layout {
+  display: flex;
+  gap: 0;
+  align-items: flex-start;
+}
+
+/* ── Panel toggle button ── */
+.panel-toggle-wrap {
+  flex-shrink: 0;
+  padding-top: 2px;
+}
+#panel-toggle-btn {
+  writing-mode: vertical-rl;
+  text-orientation: mixed;
+  height: fit-content;
+  padding: 8px 4px;
+  font-size: 0.75rem;
+  white-space: nowrap;
+  border-radius: 4px;
+}
+
+/* ── Authors panel ── */
+.authors-panel {
+  flex-shrink: 0;
+  width: 230px;
+  min-width: 0;
+  overflow: hidden;
+  transition: width 0.25s ease, padding 0.25s ease, opacity 0.2s ease,
+              margin 0.25s ease, border-width 0.25s ease;
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  background: #fafafa;
+  position: sticky;
+  top: 1rem;
+  align-self: flex-start;
+  margin-left: 6px;
+  margin-right: 10px;
+  padding: 0.5rem !important;
+}
+.authors-panel.collapsed {
+  width: 0 !important;
+  padding: 0 !important;
+  margin-left: 0 !important;
+  margin-right: 4px !important;
+  opacity: 0;
+  border-width: 0 !important;
+  pointer-events: none;
+}
+
+/* ── Table wrap ── */
+.detail-table-wrap {
+  flex: 1;
+  overflow-x: auto;
+  min-width: 0;
+}
+
+/* ── Table ── */
+#detail-table {
+  table-layout: fixed;
+  min-width: 800px;
+  border-collapse: collapse;
+}
+#detail-table th,
+#detail-table td {
+  vertical-align: top;
+  font-size: 0.875rem;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+#detail-table .field-label {
+  background: #f8f9fa;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: #444;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+#detail-table thead th {
+  background: #f1f3f5;
+  font-size: 0.85rem;
+  position: relative;
+  user-select: none;
+}
+
+/* ── Resize handle ── */
+.resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 1;
+}
+.resize-handle:hover,
+.col-resizing .resize-handle:hover {
+  background: rgba(13, 110, 253, 0.35);
+}
+body.col-resizing { cursor: col-resize !important; user-select: none !important; }
+
+/* ── Null rows ── */
+.null-row td { color: #bbb; font-style: italic; }
+
+/* ── Editable cells ── */
+td[data-col-type='repozitar'] { cursor: text; }
+td[data-col-type='repozitar'].editing { background: #fffde7; }
+td[data-col-type='wos'],
+td[data-col-type='scopus'] {
+  cursor: text;
+  outline: none;
+}
+td[data-col-type='wos']:focus,
+td[data-col-type='scopus']:focus {
+  outline: 2px solid #0d6efd;
+  background: #fff;
+}
+.cell-modified { background: #fff8e1 !important; }
+
+/* ── Fix badge ── */
+.fix-badge {
+  display: inline-block;
+  font-size: 0.68rem;
+  background: #d1fae5;
+  border: 1px solid #6ee7b7;
+  border-radius: 3px;
+  padding: 1px 5px;
+  cursor: pointer;
+  vertical-align: middle;
+  line-height: 1.4;
+  color: #065f46;
+  margin-left: 3px;
+}
+.fix-badge:hover { background: #a7f3d0; }
+
+/* ── Save button ── */
+#save-all-btn { display: none; }
+
+/* ── Crossref section ── */
+.crossref-section-header td {
+  font-size: 0.75rem;
+  letter-spacing: 0.03em;
+  text-transform: uppercase;
+}
+.crossref-row td { font-size: 0.8rem; color: #555; }
+</style>
+{% endblock %}
+
+{% block content %}
+
+<!-- Breadcrumb -->
+<nav aria-label="breadcrumb" class="mb-2">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="/">Zoznam</a></li>
+    <li class="breadcrumb-item active">{{ resource_id }}</li>
+  </ol>
+</nav>
+
+<!-- Hlavička -->
+<div class="d-flex align-items-start justify-content-between mb-3 gap-2 flex-wrap">
+  <div style="min-width:0; flex:1;">
+    <h5 class="mb-0 text-truncate">
+      {{ detail.main.get('dc.title', [''])[0] if detail.main.get('dc.title') else '(bez názvu)' }}
+    </h5>
+    <small class="text-muted">resource_id: <code>{{ resource_id }}</code></small>
+    {% if detail.checked_at %}
+    <span class="badge bg-success ms-2">
+      Skontrolované ({{ detail.checked_at|length }}×)
+    </span>
+    {% endif %}
+  </div>
+
+  <!-- Akcie -->
+  <div class="d-flex gap-2 align-items-center flex-shrink-0 flex-wrap">
+
+    <!-- Uložiť zmeny -->
+    <button id="save-all-btn"
+            class="btn btn-sm btn-warning"
+            onclick="window.saveAllChanges()">
+      Uložiť zmeny (<span id="changed-count">0</span>)
+    </button>
+
+    <!-- Stĺpce dropdown -->
+    <div class="dropdown">
+      <button class="btn btn-sm btn-outline-secondary dropdown-toggle"
+              type="button"
+              data-bs-toggle="dropdown"
+              aria-expanded="false">
+        Stĺpce
+      </button>
+      <ul class="dropdown-menu dropdown-menu-end">
+        <li>
+          <label class="dropdown-item d-flex align-items-center gap-2" style="cursor:pointer;">
+            <input type="checkbox" class="col-toggle form-check-input" data-col="repozitar" checked>
+            Repozitár
+          </label>
+        </li>
+        <li>
+          <label class="dropdown-item d-flex align-items-center gap-2" style="cursor:pointer;">
+            <input type="checkbox" class="col-toggle form-check-input" data-col="wos" checked>
+            WOS
+          </label>
+        </li>
+        <li>
+          <label class="dropdown-item d-flex align-items-center gap-2" style="cursor:pointer;">
+            <input type="checkbox" class="col-toggle form-check-input" data-col="scopus" checked>
+            Scopus
+          </label>
+        </li>
+        <li>
+          <label class="dropdown-item d-flex align-items-center gap-2" style="cursor:pointer;">
+            <input type="checkbox" class="col-toggle form-check-input" data-col="crossref" checked>
+            Crossref
+          </label>
+        </li>
+      </ul>
+    </div>
+
+    <a href="/" class="btn btn-sm btn-outline-secondary">← Späť</a>
+
+    <button class="btn btn-sm btn-success"
+            hx-post="/record/{{ resource_id }}/approve"
+            hx-target="#approve-msg"
+            hx-swap="innerHTML">
+      Schváliť ✓
+    </button>
+  </div>
+</div>
+
+<div id="approve-msg"></div>
+
+<!-- ── Hlavný layout ── -->
+<div class="detail-layout">
+
+  <!-- Panel toggle button -->
+  <div class="panel-toggle-wrap">
+    <button id="panel-toggle-btn"
+            class="btn btn-outline-secondary"
+            title="Skryť panel autorov">
+      <span class="panel-arrow">◀</span> Autori
+    </button>
+  </div>
+
+  <!-- ── Ľavý panel: UTB autori ── -->
+  <aside id="authors-panel" class="authors-panel">
+    <div class="fw-bold small mb-2" style="white-space:nowrap;">UTB autori</div>
+
+    <!-- Vyhľadávanie -->
+    <input type="search"
+           class="form-control form-control-sm mb-2"
+           placeholder="Hľadať…"
+           hx-get="/api/authors"
+           hx-target="#authors-list"
+           hx-trigger="keyup changed delay:300ms"
+           name="q">
+
+    <!-- Zoznam autorov -->
+    <div id="authors-list" style="max-height:380px; overflow-y:auto; font-size:0.8rem;">
+      {% for author in utb_authors %}
+      <div class="d-flex justify-content-between align-items-center py-1 border-bottom"
+           data-name="{{ author.display_name }}">
+        <div style="min-width:0;">
+          <span class="fw-semibold">{{ author.primary }}</span>
+          {% if author.variants|length > 1 %}
+          <br><span class="text-muted" style="font-size:0.68rem;">
+            {% for v in author.variants[1:] %}{{ v }}{% if not loop.last %} | {% endif %}{% endfor %}
+          </span>
+          {% endif %}
+        </div>
+        <button class="btn btn-outline-danger p-0 px-1 ms-1 flex-shrink-0"
+                style="font-size:0.7rem; line-height:1.4;"
+                hx-delete="/api/authors"
+                hx-vals='{"display_name": "{{ author.display_name }}"}'
+                hx-target="#authors-list"
+                hx-swap="innerHTML"
+                hx-confirm="Odstrániť autora?"
+                title="Odstrániť">✕</button>
+      </div>
+      {% else %}
+      <p class="text-muted small">Žiadni autori.</p>
+      {% endfor %}
+    </div>
+
+    <!-- Pridanie autora -->
+    <form class="mt-2"
+          hx-post="/api/authors"
+          hx-target="#authors-list"
+          hx-swap="innerHTML">
+      <div class="input-group input-group-sm">
+        <input type="text" name="display_name" class="form-control"
+               placeholder="Nové meno…" required>
+        <button type="submit" class="btn btn-utb btn-sm">+</button>
+      </div>
+    </form>
+  </aside>
+
+  <!-- ── Hlavná tabuľka metadát ── -->
+  <div class="detail-table-wrap">
+    <table class="table table-bordered table-sm" id="detail-table"
+           data-doi="{{ doi or '' }}"
+           data-resource-id="{{ resource_id }}">
+      <colgroup>
+        <col class="col-label"     style="width:180px;">
+        <col class="col-repozitar" style="width:260px;">
+        <col class="col-wos"       style="width:200px;">
+        <col class="col-scopus"    style="width:200px;">
+        <col class="col-crossref"  style="width:180px;">
+      </colgroup>
+      <thead class="table-light">
+        <tr>
+          <th class="col-label">
+            Metadata
+            <div class="resize-handle"></div>
+          </th>
+          <th class="col-repozitar">
+            Repozitár
+            <br><small class="text-muted fw-normal">utb_metadata_arr</small>
+            <div class="resize-handle"></div>
+          </th>
+          <th class="col-wos">
+            WOS
+            <br><small class="text-muted fw-normal">Web of Science</small>
+            <div class="resize-handle"></div>
+          </th>
+          <th class="col-scopus">
+            Scopus
+            <div class="resize-handle"></div>
+          </th>
+          <th class="col-crossref">
+            Crossref
+            <span class="spinner-border spinner-border-sm text-muted ms-1"
+                  id="crossref-spinner" role="status"
+                  style="width:.75rem;height:.75rem;"></span>
+            <div class="resize-handle"></div>
+          </th>
+        </tr>
+      </thead>
+
+      <!-- Hlavné riadky metadát -->
+      <tbody id="main-body">
+        {% for f in detail.fields %}
+        {% set is_null = not f.main and not f.proposed and not f.wos_val and not f.scopus_val %}
+        <tr class="{% if is_null %}null-row{% endif %}" data-field-key="{{ f.key }}">
+
+          <!-- Metadata label -->
+          <td class="field-label col-label" title="{{ f.key }}">{{ f.label }}</td>
+
+          <!-- Repozitár (klik = edit) -->
+          <td class="col-repozitar"
+              data-col-type="repozitar"
+              data-field="{{ f.key }}"
+              data-original="{{ f.main or '' }}"
+              data-proposed="{{ f.proposed or '' }}">
+            {# Obsah nastaví JS cez renderRepozitarCell #}
+          </td>
+
+          <!-- WOS stĺpec -->
+          <td class="col-wos"
+              data-col-type="wos"
+              {% if f.wos_field_key %}
+              contenteditable="true"
+              data-field="{{ f.wos_field_key }}"
+              {% endif %}
+              data-original="{{ f.wos_val or '' }}">
+            {% if f.wos_val %}{{ f.wos_val }}{% else %}<span class="text-muted">—</span>{% endif %}
+          </td>
+
+          <!-- Scopus stĺpec -->
+          <td class="col-scopus"
+              data-col-type="scopus"
+              {% if f.scopus_field_key %}
+              contenteditable="true"
+              data-field="{{ f.scopus_field_key }}"
+              {% endif %}
+              data-original="{{ f.scopus_val or '' }}">
+            {% if f.scopus_val %}{{ f.scopus_val }}{% else %}<span class="text-muted">—</span>{% endif %}
+          </td>
+
+          <!-- Crossref bunka – naplní JS po načítaní z API -->
+          <td class="col-crossref text-muted" data-cf-field="{{ f.key }}">—</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+
+      <!-- Extra Crossref polia bez mapovania – naplní JS -->
+      <tbody id="crossref-extra-body"></tbody>
+
+    </table>
+  </div><!-- /detail-table-wrap -->
+
+</div><!-- /detail-layout -->
+
+{% endblock %}
+
+{% block extra_js %}
+<script>
+  // Globálna premenná pre resource_id (použije detail.js)
+  window.RESOURCE_ID = "{{ resource_id }}";
+</script>
+<script src="{{ url_for('static', filename='js/detail.js') }}"></script>
+{% endblock %}

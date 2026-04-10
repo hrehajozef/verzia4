@@ -1,0 +1,31 @@
+{% extends "base.html" %}
+
+{% block title %}Záznamy na kontrolu – UTB Metadata Review{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center justify-content-between mb-3">
+  <div>
+    <h4 class="mb-0">Záznamy na kontrolu</h4>
+    <small class="text-muted">Celkom neskontrolovaných: <strong>{{ total }}</strong></small>
+  </div>
+
+  <!-- Zoradenie – HTMX mení len zoznam bez reloadu stránky -->
+  <div class="d-flex align-items-center gap-2">
+    <span class="text-muted small">Zoradiť:</span>
+    {% for key, label in sort_labels.items() %}
+    <button
+      class="btn btn-sm {% if sort == key %}btn-utb{% else %}btn-outline-secondary{% endif %}"
+      hx-get="/?sort={{ key }}"
+      hx-target="#groups-container"
+      hx-swap="innerHTML"
+      hx-push-url="/?sort={{ key }}"
+    >{{ label }}</button>
+    {% endfor %}
+  </div>
+</div>
+
+<!-- Skupiny záznamov – HTMX sem swapuje nový obsah pri zmene zoradenia -->
+<div id="groups-container">
+  {% include "records/_groups.html" %}
+</div>
+{% endblock %}

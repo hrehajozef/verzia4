@@ -30,6 +30,7 @@ from src.common.constants import (
     FACULTIES,
     FACULTY_ENGLISH_TO_ID,
     FACULTY_KEYWORD_RULES,
+    QUEUE_TABLE,
     WOS_ABBREV_NORM,
     FlagKey,
     HeuristicStatus,
@@ -319,6 +320,7 @@ def run_heuristics(
     batch_size    = batch_size    or settings.heuristics_batch_size
     schema        = settings.local_schema
     table         = settings.local_table
+    queue         = QUEUE_TABLE
     statuses      = [HeuristicStatus.NOT_PROCESSED]
     if reprocess_errors:
         statuses.append(HeuristicStatus.ERROR)
@@ -330,7 +332,7 @@ def run_heuristics(
 
     with engine.connect() as conn:
         total = conn.execute(
-            text(f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE author_heuristic_status = ANY(:s)'),
+            text(f'SELECT COUNT(*) FROM "{schema}"."{queue}" WHERE author_heuristic_status = ANY(:s)'),
             {"s": statuses},
         ).scalar_one()
 
@@ -349,12 +351,13 @@ def run_heuristics(
         with engine.connect() as conn:
             rows = conn.execute(
                 text(f"""
-                    SELECT resource_id,
-                           "utb.wos.affiliation"   AS wos_aff,
-                           "dc.contributor.author" AS dc_authors
-                    FROM "{schema}"."{table}"
-                    WHERE author_heuristic_status = ANY(:s)
-                    ORDER BY resource_id
+                    SELECT m.resource_id,
+                           m."utb.wos.affiliation"   AS wos_aff,
+                           m."dc.contributor.author" AS dc_authors
+                    FROM "{schema}"."{table}" m
+                    JOIN "{schema}"."{queue}" q ON m.resource_id = q.resource_id
+                    WHERE q.author_heuristic_status = ANY(:s)
+                    ORDER BY m.resource_id
                     LIMIT :lim
                 """),
                 {"s": statuses, "lim": batch},
@@ -366,7 +369,7 @@ def run_heuristics(
         updates = process_batch(rows, registry, normalize=normalize, remote_engine=remote_engine)
 
         update_sql = f"""
-            UPDATE "{schema}"."{table}"
+            UPDATE "{schema}"."{queue}"
             SET
                 author_flags                   = %s::jsonb,
                 author_heuristic_status        = %s,
@@ -436,14 +439,16 @@ def compare_with_librarian(engine: "Engine | None" = None) -> None:
     engine = engine or get_local_engine()
     schema = settings.local_schema
     table  = settings.local_table
+    queue  = QUEUE_TABLE
 
     with engine.connect() as conn:
         rows = conn.execute(text(f"""
-            SELECT resource_id,
-                   author_internal_names                  AS prog,
-                   "utb.contributor.internalauthor"       AS lib
-            FROM "{schema}"."{table}"
-            WHERE author_heuristic_status = 'processed'
+            SELECT q.resource_id,
+                   q.author_internal_names                  AS prog,
+                   m."utb.contributor.internalauthor"       AS lib
+            FROM "{schema}"."{queue}" q
+            JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id
+            WHERE q.author_heuristic_status = 'processed'
         """)).fetchall()
 
     cats: dict[str, int] = {

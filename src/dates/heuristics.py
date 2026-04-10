@@ -29,6 +29,7 @@ from datetime import datetime, timezone
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from src.common.constants import QUEUE_TABLE
 from src.dates.parser import ParsedDates, parse_fulltext_dates
 from src.db.engines import get_local_engine
 from src.config.settings import settings
@@ -60,25 +61,11 @@ DATE_COLUMNS: list[tuple[str, str, str | None]] = [
 
 def setup_date_columns(engine: Engine | None = None) -> None:
     """
-    Pridá DATE a LLM stĺpce do lokálnej tabuľky.
-    Bezpečné spustiť opakovane (ADD COLUMN IF NOT EXISTS).
+    DATE stĺpce sú teraz v utb_processing_queue.
+    Spusti 'queue-setup' namiesto tohto príkazu.
     """
-    engine = engine or get_local_engine()
-    schema = settings.local_schema
-    table  = settings.local_table
-
-    print(f"[SETUP] Pridávam DATE stĺpce do {schema}.{table}...")
-
-    with engine.begin() as conn:
-        for col_name, col_type, col_default in DATE_COLUMNS:
-            default_sql = f" DEFAULT {col_default}" if col_default else ""
-            conn.execute(text(f"""
-                ALTER TABLE "{schema}"."{table}"
-                ADD COLUMN IF NOT EXISTS "{col_name}" {col_type}{default_sql}
-            """))
-            print(f"  + {col_name} ({col_type})")
-
-    print("[OK] DATE stĺpce pripravené.")
+    print("[INFO] DATE stĺpce sú v utb_processing_queue. Spusti 'queue-setup'.")
+    print("[INFO] Príkaz dates-setup je zastaraný – môžeš ho ignorovať.")
 
 
 # -----------------------------------------------------------------------
@@ -103,6 +90,7 @@ def run_date_heuristics(
     engine = engine or get_local_engine()
     schema = settings.local_schema
     table  = settings.local_table
+    queue  = QUEUE_TABLE
 
     statuses = ["not_processed"]
     if reprocess:
@@ -112,9 +100,10 @@ def run_date_heuristics(
         total = conn.execute(
             text(f"""
                 SELECT COUNT(*)
-                FROM "{schema}"."{table}"
-                WHERE date_heuristic_status = ANY(:s)
-                  AND "utb.fulltext.dates" IS NOT NULL
+                FROM "{schema}"."{queue}" q
+                JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id
+                WHERE q.date_heuristic_status = ANY(:s)
+                  AND m."utb.fulltext.dates" IS NOT NULL
             """),
             {"s": statuses},
         ).scalar_one()
@@ -129,7 +118,7 @@ def run_date_heuristics(
     print(f"[INFO] Záznamov na spracovanie dátumov: {total}")
 
     update_sql = f"""
-        UPDATE "{schema}"."{table}"
+        UPDATE "{schema}"."{queue}"
         SET
             utb_date_received         = %s,
             utb_date_reviewed         = %s,
@@ -155,13 +144,14 @@ def run_date_heuristics(
             rows = conn.execute(
                 text(f"""
                     SELECT
-                        resource_id,
-                        "utb.fulltext.dates"[1] AS fulltext_dates,
-                        "dc.date.issued"[1]     AS dc_issued
-                    FROM "{schema}"."{table}"
-                    WHERE date_heuristic_status = ANY(:s)
-                      AND "utb.fulltext.dates" IS NOT NULL
-                    ORDER BY resource_id
+                        m.resource_id,
+                        m."utb.fulltext.dates"[1] AS fulltext_dates,
+                        m."dc.date.issued"[1]     AS dc_issued
+                    FROM "{schema}"."{table}" m
+                    JOIN "{schema}"."{queue}" q ON m.resource_id = q.resource_id
+                    WHERE q.date_heuristic_status = ANY(:s)
+                      AND m."utb.fulltext.dates" IS NOT NULL
+                    ORDER BY m.resource_id
                     LIMIT :lim
                 """),
                 {"s": statuses, "lim": batch},
@@ -232,7 +222,7 @@ def print_date_status(engine: Engine | None = None) -> None:
     """Vypíše štatistiky spracovania dátumov."""
     engine = engine or get_local_engine()
     schema = settings.local_schema
-    table  = settings.local_table
+    queue  = QUEUE_TABLE
 
     with engine.connect() as conn:
         rows = conn.execute(text(f"""
@@ -244,7 +234,7 @@ def print_date_status(engine: Engine | None = None) -> None:
                 COUNT(utb_date_published_online) AS has_pub_online,
                 COUNT(utb_date_published)        AS has_published,
                 SUM(CASE WHEN date_needs_llm THEN 1 ELSE 0 END) AS needs_llm_cnt
-            FROM "{schema}"."{table}"
+            FROM "{schema}"."{queue}"
             GROUP BY date_heuristic_status
             ORDER BY cnt DESC
         """)).fetchall()
@@ -262,7 +252,7 @@ def print_date_status(engine: Engine | None = None) -> None:
     with engine.connect() as conn:
         llm_rows = conn.execute(text(f"""
             SELECT date_llm_status, COUNT(*) AS cnt
-            FROM "{schema}"."{table}"
+            FROM "{schema}"."{queue}"
             WHERE date_needs_llm = TRUE
             GROUP BY date_llm_status
             ORDER BY cnt DESC

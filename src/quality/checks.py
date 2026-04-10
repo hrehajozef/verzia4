@@ -53,6 +53,7 @@ import ftfy
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from src.common.constants import QUEUE_TABLE
 from src.config.settings import settings
 from src.db.engines import get_local_engine, get_remote_engine
 
@@ -550,32 +551,11 @@ def check_obdid_batch(
 
 def setup_validation_columns(engine: Engine | None = None) -> None:
     """
-    Pridá validation stĺpce do lokálnej tabuľky.
-    Bezpečné spustiť opakovane (ADD COLUMN IF NOT EXISTS).
+    Validation stĺpce sú teraz v utb_processing_queue.
+    Spusti 'queue-setup' namiesto tohto príkazu.
     """
-    engine = engine or get_local_engine()
-    schema = settings.local_schema
-    table  = settings.local_table
-
-    cols = [
-        ("validation_status",          "TEXT",        "'not_checked'"),
-        ("validation_flags",           "JSONB",       "'{}'::jsonb"),
-        ("validation_suggested_fixes", "JSONB",       "'{}'::jsonb"),
-        ("validation_version",         "TEXT",        None),
-        ("validation_checked_at",      "TIMESTAMPTZ", None),
-    ]
-
-    print(f"[SETUP] Pridávam validation stĺpce do {schema}.{table}...")
-    with engine.begin() as conn:
-        for col_name, col_type, col_default in cols:
-            default_sql = f" DEFAULT {col_default}" if col_default else ""
-            conn.execute(text(f"""
-                ALTER TABLE "{schema}"."{table}"
-                ADD COLUMN IF NOT EXISTS "{col_name}" {col_type}{default_sql}
-            """))
-            print(f"  + {col_name} ({col_type})")
-
-    print("[OK] Validation stĺpce pripravené.")
+    print("[INFO] Validation stĺpce sú v utb_processing_queue. Spusti 'queue-setup'.")
+    print("[INFO] Príkaz validate-setup je zastaraný – môžeš ho ignorovať.")
 
 
 # -----------------------------------------------------------------------
@@ -593,15 +573,24 @@ def run_validation(
     remote_engine = remote_engine or get_remote_engine()
     schema = settings.local_schema
     table  = settings.local_table
+    queue  = QUEUE_TABLE
 
     from src.authors.registry import get_author_registry
     registry_names: set[str] = {a.full_name for a in get_author_registry(engine)}
 
-    where_clause = "" if revalidate else "WHERE validation_status = 'not_checked'"
+    # Stĺpce z hlavnej tabuľky (obsah)
+    _MAIN_COLS = [c for c in _FETCH_COLS if c not in ("author_dc_names", "author_internal_names")]
+    # Stĺpce z queue (výstupy heuristík)
+    _QUEUE_COLS = ["author_dc_names", "author_internal_names"]
+
+    main_cols_sql  = ", ".join(f'm."{c}" AS "{c}"' if "." in c else f'm."{c}"' for c in _MAIN_COLS)
+    queue_cols_sql = ", ".join(f'q."{c}"' for c in _QUEUE_COLS)
+
+    where_queue = "" if revalidate else "WHERE q.validation_status = 'not_checked'"
 
     with engine.connect() as conn:
         total = conn.execute(
-            text(f'SELECT COUNT(*) FROM "{schema}"."{table}" {where_clause}')
+            text(f'SELECT COUNT(*) FROM "{schema}"."{queue}" q {where_queue}')
         ).scalar_one()
 
     if limit > 0:
@@ -612,21 +601,17 @@ def run_validation(
     else:
         print(f"[INFO] Záznamov na validáciu: {total}")
 
-        # Dynamicky zostavíme SELECT zo _FETCH_COLS
-        cols_sql = ", ".join(
-            f'"{c}" AS "{c}"' if "." in c else f'"{c}"'
-            for c in _FETCH_COLS
-        )
         select_sql = f"""
-            SELECT resource_id, {cols_sql}
-            FROM "{schema}"."{table}"
-            {where_clause}
-            ORDER BY resource_id
+            SELECT m.resource_id, {main_cols_sql}, {queue_cols_sql}
+            FROM "{schema}"."{table}" m
+            JOIN "{schema}"."{queue}" q ON m.resource_id = q.resource_id
+            {where_queue}
+            ORDER BY m.resource_id
             LIMIT :lim
         """
 
         update_sql = f"""
-            UPDATE "{schema}"."{table}"
+            UPDATE "{schema}"."{queue}"
             SET
                 validation_status          = %s,
                 validation_flags           = %s::jsonb,
@@ -650,8 +635,7 @@ def run_validation(
 
             params = []
             for row in rows:
-                # Zostavíme row_data podľa poradia _FETCH_COLS (resource_id je row[0])
-                row_data = {col: row[i + 1] for i, col in enumerate(_FETCH_COLS)}
+                row_data = {col: getattr(row, col, None) for col in _FETCH_COLS}
 
                 status, issues, suggested_fixes = validate_record(row_data, registry_names)
                 if status == "has_issues":
@@ -691,7 +675,7 @@ def run_validation(
                     for resource_id, bad_ids in invalid_obdids.items():
                         cur.execute(
                             f"""
-                            UPDATE "{schema}"."{table}"
+                            UPDATE "{schema}"."{queue}"
                             SET
                                 validation_status = CASE
                                     WHEN validation_status = 'ok' THEN 'has_issues'
@@ -740,12 +724,14 @@ def run_apply_fixes(
     engine = engine or get_local_engine()
     schema = settings.local_schema
     table  = settings.local_table
+    queue  = QUEUE_TABLE
     is_dry = preview or dry_run
 
+    # Čítame návrhy z queue (nie z hlavnej tabuľky)
     with engine.connect() as conn:
         rows = conn.execute(text(f"""
             SELECT resource_id, validation_suggested_fixes
-            FROM "{schema}"."{table}"
+            FROM "{schema}"."{queue}"
             WHERE validation_suggested_fixes IS NOT NULL
               AND validation_suggested_fixes != '{{}}'::jsonb
             ORDER BY resource_id
@@ -778,14 +764,16 @@ def run_apply_fixes(
                     print(f"      {_ANSI_GREEN}{sugg}{_ANSI_RESET}")
             else:
                 with raw.cursor() as cur:
+                    # Opravy obsahu idú do hlavnej tabuľky
                     for field, fix_data in fixes.items():
                         cur.execute(
                             f'UPDATE "{schema}"."{table}" SET "{field}" = %s WHERE resource_id = %s',
                             (fix_data["suggested"], resource_id),
                         )
+                    # Reset statusu v queue
                     cur.execute(
                         f"""
-                        UPDATE "{schema}"."{table}"
+                        UPDATE "{schema}"."{queue}"
                         SET
                             validation_suggested_fixes = '{{}}'::jsonb,
                             validation_status          = 'not_checked'
@@ -815,12 +803,12 @@ def run_apply_fixes(
 def print_validation_status(engine: Engine | None = None) -> None:
     engine = engine or get_local_engine()
     schema = settings.local_schema
-    table  = settings.local_table
+    queue  = QUEUE_TABLE
 
     with engine.connect() as conn:
         status_rows = conn.execute(text(f"""
             SELECT validation_status, COUNT(*) AS cnt
-            FROM "{schema}"."{table}"
+            FROM "{schema}"."{queue}"
             GROUP BY validation_status
             ORDER BY cnt DESC
         """)).fetchall()
@@ -831,7 +819,7 @@ def print_validation_status(engine: Engine | None = None) -> None:
 
     with engine.connect() as conn:
         pending = conn.execute(text(f"""
-            SELECT COUNT(*) FROM "{schema}"."{table}"
+            SELECT COUNT(*) FROM "{schema}"."{queue}"
             WHERE validation_suggested_fixes IS NOT NULL
               AND validation_suggested_fixes != '{{}}'::jsonb
         """)).scalar_one()
@@ -840,7 +828,7 @@ def print_validation_status(engine: Engine | None = None) -> None:
     with engine.connect() as conn:
         issue_rows = conn.execute(text(f"""
             SELECT validation_flags
-            FROM "{schema}"."{table}"
+            FROM "{schema}"."{queue}"
             WHERE validation_status = 'has_issues'
         """)).fetchall()
 

@@ -41,12 +41,9 @@ from src.db.engines import get_local_engine
 
 DEDUP_VERSION = "2.0.0"
 
-# TODO: Overiť presné názvy stĺpcov pre volume/issue/spage/epage v lokálnej DB
 _PAGINATION_COLS = [
-    "utb.wos.volume",
-    "utb.wos.issue",
-    "utb.wos.spage",
-    "utb.wos.epage",
+    "utb.relation.volume",
+    "utb.relation.issue",
 ]
 
 

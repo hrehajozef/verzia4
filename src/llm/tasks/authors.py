@@ -14,7 +14,7 @@ from sqlalchemy.engine import Engine
 
 from src.authors.registry import InternalAuthor, _normalize_name, get_author_registry
 from src.authors.parsers.wos import normalize_text
-from src.common.constants import DEPARTMENTS, FACULTIES, LLMStatus
+from src.common.constants import DEPARTMENTS, FACULTIES, LLMStatus, QUEUE_TABLE
 from src.config.settings import settings
 from src.db.engines import get_local_engine
 from src.llm.session import LLMSession, create_authors_session
@@ -385,6 +385,7 @@ def run_llm(
     batch_size = batch_size or settings.llm_batch_size
     schema     = settings.local_schema
     table      = settings.local_table
+    queue      = QUEUE_TABLE
 
     llm_client = get_llm_client(provider)
     session    = create_authors_session(llm_client)
@@ -393,7 +394,7 @@ def run_llm(
     with engine.connect() as conn:
         total = conn.execute(
             text(
-                f'SELECT COUNT(*) FROM "{schema}"."{table}"'
+                f'SELECT COUNT(*) FROM "{schema}"."{queue}"'
                 " WHERE author_needs_llm = TRUE AND author_llm_status IN (:np, :err)"
             ),
             {"np": LLMStatus.NOT_PROCESSED, "err": LLMStatus.ERROR},
@@ -415,14 +416,15 @@ def run_llm(
         with engine.connect() as conn:
             rows = conn.execute(
                 text(f"""
-                    SELECT resource_id,
-                           "utb.wos.affiliation"    AS wos_aff,
-                           "utb.scopus.affiliation" AS scopus_aff,
-                           author_flags
-                    FROM "{schema}"."{table}"
-                    WHERE author_needs_llm = TRUE
-                      AND author_llm_status IN (:np, :err)
-                    ORDER BY resource_id
+                    SELECT q.resource_id,
+                           m."utb.wos.affiliation"    AS wos_aff,
+                           m."utb.scopus.affiliation" AS scopus_aff,
+                           q.author_flags
+                    FROM "{schema}"."{queue}" q
+                    JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id
+                    WHERE q.author_needs_llm = TRUE
+                      AND q.author_llm_status IN (:np, :err)
+                    ORDER BY q.resource_id
                     LIMIT :lim
                 """),
                 {"np": LLMStatus.NOT_PROCESSED, "err": LLMStatus.ERROR, "lim": batch},
@@ -445,7 +447,7 @@ def run_llm(
         errors += sum(1 for u in updates if u["author_llm_status"] != LLMStatus.PROCESSED)
 
         update_sql = f"""
-            UPDATE "{schema}"."{table}"
+            UPDATE "{schema}"."{queue}"
             SET
                 author_llm_result    = %s::jsonb,
                 author_llm_status    = %s,

@@ -3,13 +3,13 @@
 Pipeline (odporúčané poradie):
   1. bootstrap           – skopíruje remote tabuľku do lokálnej DB
   2. import-authors      – importuje interných autorov z CSV do lokálnej DB
-  3. validate-setup      – pridá validation stĺpce (spusti raz)
+  3. queue-setup         – vytvorí utb_processing_queue (spusti raz, pred ostatnými)
   4. validate            – validácia metadát (trailing spaces, mojibake, DOI, ...)
-  5. dates-setup         – pridá DATE stĺpce (spusti raz)
-  6. heuristics          – heuristické spracovanie mien a afiliácií autorov
-  7. dates               – heuristické parsovanie dátumov
-  8. llm                 – LLM spracovanie autorov (záznamy s needs_llm=TRUE)
-  9. dates-llm           – LLM spracovanie dátumov (záznamy s date_needs_llm=TRUE)
+  5. heuristics          – heuristické spracovanie mien a afiliácií autorov
+  6. dates               – heuristické parsovanie dátumov
+  7. heuristics-llm      – LLM spracovanie autorov (záznamy s needs_llm=TRUE)
+  8. dates-llm           – LLM spracovanie dátumov (záznamy s date_needs_llm=TRUE)
+  9. journals-lookup     – normalizácia publisher/ispartof cez ISSN/ISBN API
  10. deduplicate         – identifikácia duplikátov
 
 Príkazy štatistík:
@@ -117,6 +117,18 @@ def import_authors(
 # VALIDÁCIA
 # ═══════════════════════════════════════════════════════════════════════
 
+@app.command(name="queue-setup")
+def queue_setup() -> None:
+    """
+    Vytvorí tabuľku utb_processing_queue (medzitabuľka pre výstupy pipeline).
+
+    Spusti raz po bootstrape, pred ostatnými setup príkazmi.
+    Bezpečné spustiť opakovane.
+    """
+    from src.db.setup import setup_processing_queue
+    setup_processing_queue()
+
+
 @app.command(name="validate-setup")
 def validate_setup() -> None:
     """
@@ -218,22 +230,23 @@ def heuristics_compare() -> None:
 @app.command(name="heuristics-status")
 def status() -> None:
     """Štatistiky spracovania mien a afiliácií."""
+    from src.common.constants import QUEUE_TABLE
     engine = get_local_engine()
     schema = settings.local_schema
-    table  = settings.local_table
+    queue  = QUEUE_TABLE
 
     with engine.connect() as conn:
         total = conn.execute(
-            text(f'SELECT COUNT(*) FROM "{schema}"."{table}"')
+            text(f'SELECT COUNT(*) FROM "{schema}"."{queue}"')
         ).scalar_one()
         with_authors = conn.execute(
-            text(f'SELECT COUNT(*) FROM "{schema}"."{table}" WHERE author_internal_names IS NOT NULL')
+            text(f'SELECT COUNT(*) FROM "{schema}"."{queue}" WHERE author_internal_names IS NOT NULL')
         ).scalar_one()
         heuristic_rows = conn.execute(
-            text(f'SELECT author_heuristic_status, COUNT(*) AS cnt FROM "{schema}"."{table}" GROUP BY author_heuristic_status ORDER BY cnt DESC')
+            text(f'SELECT author_heuristic_status, COUNT(*) AS cnt FROM "{schema}"."{queue}" GROUP BY author_heuristic_status ORDER BY cnt DESC')
         ).fetchall()
         llm_rows = conn.execute(
-            text(f'SELECT author_llm_status, COUNT(*) AS cnt FROM "{schema}"."{table}" WHERE author_needs_llm = TRUE GROUP BY author_llm_status ORDER BY cnt DESC')
+            text(f'SELECT author_llm_status, COUNT(*) AS cnt FROM "{schema}"."{queue}" WHERE author_needs_llm = TRUE GROUP BY author_llm_status ORDER BY cnt DESC')
         ).fetchall()
 
     typer.echo(f"Celkom záznamov:      {total}")

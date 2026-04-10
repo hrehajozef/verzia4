@@ -12,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
+from src.common.constants import QUEUE_TABLE
 from src.config.settings import settings
 from src.db.engines import get_local_engine
 from src.llm.session import LLMSession, create_dates_session
@@ -333,6 +334,7 @@ def run_date_llm(
     batch_size = batch_size or settings.llm_batch_size
     schema     = settings.local_schema
     table      = settings.local_table
+    queue      = QUEUE_TABLE
 
     llm_client = get_llm_client(provider)
     session    = create_dates_session(llm_client)
@@ -342,14 +344,16 @@ def run_date_llm(
         statuses.append("error")
         statuses.append("validation_error")
 
-    dash_filter = "" if include_dash else "AND (\"utb.fulltext.dates\"[1] IS NULL OR \"utb.fulltext.dates\"[1] != '{-}')"
+    dash_filter = "" if include_dash else "AND (m.\"utb.fulltext.dates\"[1] IS NULL OR m.\"utb.fulltext.dates\"[1] != '{-}')"
 
     with engine.connect() as conn:
         total = conn.execute(
             text(f"""
-                SELECT COUNT(*) FROM "{schema}"."{table}"
-                WHERE date_needs_llm = TRUE
-                  AND date_llm_status = ANY(:s)
+                SELECT COUNT(*)
+                FROM "{schema}"."{queue}" q
+                JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id
+                WHERE q.date_needs_llm = TRUE
+                  AND q.date_llm_status = ANY(:s)
                   {dash_filter}
             """),
             {"s": statuses},
@@ -373,15 +377,16 @@ def run_date_llm(
             rows = conn.execute(
                 text(f"""
                     SELECT
-                        resource_id,
-                        "utb.fulltext.dates"[1] AS fulltext_dates,
-                        "dc.date.issued"[1]     AS dc_issued,
-                        date_flags
-                    FROM "{schema}"."{table}"
-                    WHERE date_needs_llm = TRUE
-                      AND date_llm_status = ANY(:s)
+                        q.resource_id,
+                        m."utb.fulltext.dates"[1] AS fulltext_dates,
+                        m."dc.date.issued"[1]     AS dc_issued,
+                        q.date_flags
+                    FROM "{schema}"."{queue}" q
+                    JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id
+                    WHERE q.date_needs_llm = TRUE
+                      AND q.date_llm_status = ANY(:s)
                       {dash_filter}
-                    ORDER BY resource_id
+                    ORDER BY q.resource_id
                     LIMIT :lim
                 """),
                 {"s": statuses, "lim": batch},
@@ -403,7 +408,7 @@ def run_date_llm(
         errors += sum(1 for u in updates if u["date_llm_status"] != "processed")
 
         update_sql = f"""
-            UPDATE "{schema}"."{table}"
+            UPDATE "{schema}"."{queue}"
             SET
                 date_llm_result       = %s::jsonb,
                 date_llm_status       = %s,

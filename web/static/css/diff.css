@@ -1,0 +1,34 @@
+/* ── Diff highlighting pre Repozitár stĺpec ── */
+
+/* Navrhnuté pridanie (zelená) */
+.diff-insert {
+  background-color: #86efac;
+  border-radius: 2px;
+  padding: 0 1px;
+}
+
+/* Navrhnuté zmazanie (červená + prečiarknuté) */
+.diff-delete {
+  background-color: #fca5a5;
+  border-radius: 2px;
+  padding: 0 1px;
+  text-decoration: line-through;
+}
+
+/* Celý nový návrh (prázdna pôvodná hodnota) */
+.proposed-add {
+  background-color: #d1fae5;
+  border-radius: 3px;
+  padding: 1px 4px;
+  display: inline-block;
+}
+
+/* Zmazanie celej hodnoty */
+.proposed-del {
+  background-color: #fee2e2;
+  border-radius: 3px;
+  padding: 1px 4px;
+  display: inline-block;
+  text-decoration: line-through;
+  color: #991b1b;
+}

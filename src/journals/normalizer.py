@@ -22,6 +22,7 @@ from typing import Any
 from sqlalchemy import inspect, text
 from sqlalchemy.engine import Engine
 
+from src.common.constants import QUEUE_TABLE
 from src.config.settings import settings
 from src.db.engines import get_local_engine
 from src.journals.lookup import LookupResult, lookup_by_isbn, lookup_by_issn
@@ -111,23 +112,12 @@ def _matches(val: Any, canonical: str) -> bool:
 # ═══════════════════════════════════════════════════════════════════════
 
 def setup_journal_columns(engine: Engine | None = None) -> None:
-    engine = engine or get_local_engine()
-    schema = settings.local_schema
-    table  = settings.local_table
-    existing = {col["name"] for col in inspect(engine).get_columns(table, schema=schema)}
-
-    with engine.begin() as conn:
-        for col_name, col_type, col_default in _SETUP_COLS:
-            if col_name in existing:
-                continue
-            default_sql = f" DEFAULT {col_default}" if col_default else ""
-            conn.execute(text(f"""
-                ALTER TABLE "{schema}"."{table}"
-                ADD COLUMN IF NOT EXISTS "{col_name}" {col_type}{default_sql}
-            """))
-            print(f"  + {col_name} ({col_type})")
-
-    print("[OK] Journal norm stĺpce pripravené.")
+    """
+    Journal norm stĺpce sú teraz v utb_processing_queue.
+    Spusti 'queue-setup' namiesto tohto príkazu.
+    """
+    print("[INFO] Journal norm stĺpce sú v utb_processing_queue. Spusti 'queue-setup'.")
+    print("[INFO] Príkaz journals-setup je zastaraný – môžeš ho ignorovať.")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -174,6 +164,7 @@ def run_journal_lookup(
     engine = engine or get_local_engine()
     schema = settings.local_schema
     table  = settings.local_table
+    queue  = QUEUE_TABLE
 
     statuses = [JournalNormStatus.NOT_PROCESSED]
     if reprocess:
@@ -185,16 +176,17 @@ def run_journal_lookup(
 
     with engine.connect() as conn:
         rows = conn.execute(text(f"""
-            SELECT resource_id,
-                   "dc.identifier.issn"     AS issn_arr,
-                   "dc.identifier.isbn"     AS isbn_arr,
-                   "dc.publisher"           AS publisher,
-                   "dc.relation.ispartof"   AS ispartof,
-                   "utb.scopus.affiliation" AS scopus_aff,
-                   "utb.wos.affiliation"    AS wos_aff
-            FROM "{schema}"."{table}"
-            WHERE journal_norm_status = ANY(:s)
-            ORDER BY resource_id
+            SELECT m.resource_id,
+                   m."dc.identifier.issn"     AS issn_arr,
+                   m."dc.identifier.isbn"     AS isbn_arr,
+                   m."dc.publisher"           AS publisher,
+                   m."dc.relation.ispartof"   AS ispartof,
+                   m."utb.scopus.affiliation" AS scopus_aff,
+                   m."utb.wos.affiliation"    AS wos_aff
+            FROM "{schema}"."{table}" m
+            JOIN "{schema}"."{queue}" q ON m.resource_id = q.resource_id
+            WHERE q.journal_norm_status = ANY(:s)
+            ORDER BY m.resource_id
         """), {"s": statuses}).fetchall()
 
     if not rows:
@@ -342,9 +334,9 @@ def _build_update(
 
 def _write_updates(engine: Engine, updates: list[dict]) -> None:
     schema = settings.local_schema
-    table  = settings.local_table
+    queue  = QUEUE_TABLE
     sql = f"""
-        UPDATE "{schema}"."{table}"
+        UPDATE "{schema}"."{queue}"
         SET
             journal_norm_status             = %s,
             journal_norm_proposed_publisher = %s,
@@ -379,12 +371,12 @@ def _write_updates(engine: Engine, updates: list[dict]) -> None:
 
 def _batch_set_status(engine: Engine, resource_ids: list[int], status: str) -> None:
     schema = settings.local_schema
-    table  = settings.local_table
+    queue  = QUEUE_TABLE
     raw = engine.raw_connection()
     try:
         with raw.cursor() as cur:
             cur.executemany(
-                f'UPDATE "{schema}"."{table}" SET journal_norm_status = %s WHERE resource_id = %s',
+                f'UPDATE "{schema}"."{queue}" SET journal_norm_status = %s WHERE resource_id = %s',
                 [(status, rid) for rid in resource_ids],
             )
         raw.commit()
@@ -414,27 +406,29 @@ def run_journal_apply(
     engine = engine or get_local_engine()
     schema = settings.local_schema
     table  = settings.local_table
+    queue  = QUEUE_TABLE
 
-    where  = "journal_norm_status = :st"
+    where  = "q.journal_norm_status = :st"
     params: dict = {"st": JournalNormStatus.HAS_PROPOSAL}
     if issn_filter:
-        where += " AND journal_norm_issn_key = :issn"
+        where += " AND q.journal_norm_issn_key = :issn"
         params["issn"] = issn_filter.lower().strip()
 
     limit_sql = f"LIMIT {limit}" if limit > 0 else ""
 
     with engine.connect() as conn:
         rows = conn.execute(text(f"""
-            SELECT resource_id,
-                   "dc.publisher"             AS current_publisher,
-                   "dc.relation.ispartof"     AS current_ispartof,
-                   journal_norm_proposed_publisher,
-                   journal_norm_proposed_ispartof,
-                   journal_norm_api_source,
-                   journal_norm_issn_key
-            FROM "{schema}"."{table}"
+            SELECT q.resource_id,
+                   m."dc.publisher"             AS current_publisher,
+                   m."dc.relation.ispartof"     AS current_ispartof,
+                   q.journal_norm_proposed_publisher,
+                   q.journal_norm_proposed_ispartof,
+                   q.journal_norm_api_source,
+                   q.journal_norm_issn_key
+            FROM "{schema}"."{queue}" q
+            JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id
             WHERE {where}
-            ORDER BY journal_norm_issn_key, resource_id
+            ORDER BY q.journal_norm_issn_key, q.resource_id
             {limit_sql}
         """), params).fetchall()
 
@@ -535,29 +529,12 @@ def _print_group(issn_key: str, grp: list) -> None:
 
 
 def _apply_rows(engine: Engine, rows: list) -> None:
-    """Zapíše kanonické hodnoty do dc.publisher / dc.relation.ispartof."""
+    """Zapíše kanonické hodnoty do dc.publisher / dc.relation.ispartof (hlavná tabuľka)
+    a aktualizuje journal_norm_status v queue."""
     schema = settings.local_schema
     table  = settings.local_table
+    queue  = QUEUE_TABLE
 
-    sql_both = f"""
-        UPDATE "{schema}"."{table}"
-        SET "dc.publisher"         = %s,
-            "dc.relation.ispartof" = %s,
-            journal_norm_status    = %s
-        WHERE resource_id = %s
-    """
-    sql_pub = f"""
-        UPDATE "{schema}"."{table}"
-        SET "dc.publisher"      = %s,
-            journal_norm_status = %s
-        WHERE resource_id = %s
-    """
-    sql_isp = f"""
-        UPDATE "{schema}"."{table}"
-        SET "dc.relation.ispartof" = %s,
-            journal_norm_status    = %s
-        WHERE resource_id = %s
-    """
     applied = JournalNormStatus.APPLIED
     raw = engine.raw_connection()
     try:
@@ -565,12 +542,27 @@ def _apply_rows(engine: Engine, rows: list) -> None:
             for r in rows:
                 pub = r.journal_norm_proposed_publisher
                 isp = r.journal_norm_proposed_ispartof
+                # Obsah → hlavná tabuľka
                 if pub and isp:
-                    cur.execute(sql_both, ([pub], [isp], applied, r.resource_id))
+                    cur.execute(
+                        f'UPDATE "{schema}"."{table}" SET "dc.publisher" = %s, "dc.relation.ispartof" = %s WHERE resource_id = %s',
+                        ([pub], [isp], r.resource_id),
+                    )
                 elif pub:
-                    cur.execute(sql_pub,  ([pub], applied, r.resource_id))
+                    cur.execute(
+                        f'UPDATE "{schema}"."{table}" SET "dc.publisher" = %s WHERE resource_id = %s',
+                        ([pub], r.resource_id),
+                    )
                 elif isp:
-                    cur.execute(sql_isp,  ([isp], applied, r.resource_id))
+                    cur.execute(
+                        f'UPDATE "{schema}"."{table}" SET "dc.relation.ispartof" = %s WHERE resource_id = %s',
+                        ([isp], r.resource_id),
+                    )
+                # Status → queue
+                cur.execute(
+                    f'UPDATE "{schema}"."{queue}" SET journal_norm_status = %s WHERE resource_id = %s',
+                    (applied, r.resource_id),
+                )
         raw.commit()
     finally:
         raw.close()
@@ -583,19 +575,19 @@ def _apply_rows(engine: Engine, rows: list) -> None:
 def print_journal_status(engine: Engine | None = None) -> None:
     engine = engine or get_local_engine()
     schema = settings.local_schema
-    table  = settings.local_table
+    queue  = QUEUE_TABLE
 
     with engine.connect() as conn:
         status_rows = conn.execute(text(f"""
             SELECT journal_norm_status, COUNT(*) AS cnt
-            FROM "{schema}"."{table}"
+            FROM "{schema}"."{queue}"
             GROUP BY journal_norm_status
             ORDER BY cnt DESC
         """)).fetchall()
 
         source_rows = conn.execute(text(f"""
             SELECT journal_norm_api_source, COUNT(*) AS cnt
-            FROM "{schema}"."{table}"
+            FROM "{schema}"."{queue}"
             WHERE journal_norm_api_source IS NOT NULL
             GROUP BY journal_norm_api_source
             ORDER BY cnt DESC
@@ -603,7 +595,7 @@ def print_journal_status(engine: Engine | None = None) -> None:
 
         top_groups = conn.execute(text(f"""
             SELECT journal_norm_issn_key, COUNT(*) AS cnt
-            FROM "{schema}"."{table}"
+            FROM "{schema}"."{queue}"
             WHERE journal_norm_status = 'has_proposal'
               AND journal_norm_issn_key IS NOT NULL
             GROUP BY journal_norm_issn_key
