@@ -16,7 +16,7 @@ _AUTHORS_LIST_TMPL = """
 {% for author in authors %}
 <div class="author-row d-flex justify-content-between align-items-center py-1 border-bottom"
      data-name="{{ author.display_name }}">
-  <div>
+  <div style="min-width:0;">
     <span class="fw-semibold">{{ author.primary }}</span>
     {% if author.variants|length > 1 %}
     <br><small class="text-muted">
@@ -24,13 +24,10 @@ _AUTHORS_LIST_TMPL = """
     </small>
     {% endif %}
   </div>
-  <button class="btn btn-sm btn-outline-danger ms-2"
-          hx-delete="/api/authors"
-          hx-vals='{"display_name": "{{ author.display_name }}"}'
-          hx-target="#authors-list"
-          hx-swap="innerHTML"
-          hx-confirm="Odstrániť autora?"
-          title="Odstrániť">✕</button>
+  <button class="btn p-0 px-1 text-secondary author-menu-btn flex-shrink-0 ms-1"
+          style="font-size:1rem; line-height:1.4; background:none; border:none;"
+          type="button"
+          data-display-name="{{ author.display_name }}">⋮</button>
 </div>
 {% else %}
 <p class="text-muted small">Žiadni autori.</p>

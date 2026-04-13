@@ -58,18 +58,6 @@ def bootstrap(
     run_bootstrap(drop_existing=drop)
 
 
-@app.command(name="migrate-columns")
-def migrate_columns() -> None:
-    """
-    Premenuje staré author stĺpce na nové author_* názvy (jednorazová migrácia).
-
-    Spusti raz ak máš existujúcu DB so starými názvami stĺpcov
-    (flags, heuristic_status, needs_llm, llm_status, ...).
-    """
-    from src.db.setup import rename_legacy_author_columns
-    rename_legacy_author_columns()
-
-
 # ═══════════════════════════════════════════════════════════════════════
 # AUTORI
 # ═══════════════════════════════════════════════════════════════════════

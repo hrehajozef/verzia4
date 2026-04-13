@@ -15,30 +15,37 @@ from src.db.engines import get_local_engine
 
 # Prioritné polia – zobrazujú sa vždy na začiatku Metadata stĺpca
 PRIORITY_FIELDS = [
+    # ── Názov ──
     "dc.title",
+    # ── Autori a afiliácia ──
     "dc.contributor.author",
     "utb.contributor.internalauthor",
+    "utb.fulltext.affiliation",
+    "utb.faculty",
+    "utb.ou",
+    # ── Dátumy ──
     "dc.date.issued",
-    "utb.fulltext.dates",
     "utb_date_received",
     "utb_date_reviewed",
     "utb_date_accepted",
     "utb_date_published_online",
     "utb_date_published",
+    "utb.fulltext.dates",
+    # ── Publikácia ──
     "dc.relation.ispartof",
     "dc.publisher",
     "utb.relation.volume",
     "utb.relation.issue",
     "dc.citation.spage",
     "dc.citation.epage",
+    # ── Typ ──
     "dc.type",
+    # ── Identifikátory ──
+    "dc.identifier.doi",
     "dc.identifier.issn",
     "dc.identifier.isbn",
-    "dc.identifier.doi",
-    "utb.faculty",
-    "utb.ou",
-    # Affiliation – reprezentovaný špeciálnym grouped riadkom
-    "utb.fulltext.affiliation",
+    "utb.identifier.wok",
+    "utb.identifier.scopus",
 ]
 
 # Kľúče, ktoré tvoria grouped "Affiliation" riadok
@@ -51,6 +58,8 @@ _PROPOSED_FROM_QUEUE: dict[str, str] = {
     "utb.contributor.internalauthor": "author_internal_names",
     "dc.publisher":                   "journal_norm_proposed_publisher",
     "dc.relation.ispartof":           "journal_norm_proposed_ispartof",
+    "utb.faculty":                    "author_faculty",
+    "utb.ou":                         "author_ou",
 }
 
 # Polia špecifické pre WoS (zobrazujú sa v WOS stĺpci)
@@ -69,8 +78,6 @@ _SCOPUS_COL_MAP: dict[str, str] = {
 
 # Interne pipeline polia (z queue tabuľky), nie z hlavnej tabuľky
 QUEUE_FIELDS: dict[str, str] = {
-    "author_faculty":                 "Fakulta (heuristika)",
-    "author_ou":                      "Oddelenie (heuristika)",
     "utb_date_received":              "Received",
     "utb_date_reviewed":              "Reviewed",
     "utb_date_accepted":              "Accepted",
@@ -110,6 +117,17 @@ _HIDDEN_FIELDS: set[str] = {
     "llm_result",
     "updated_at",
     "librarian_checked_at",
+    "librarian_modified_at",
+    "author_heuristic_status",
+    "author_heuristic_version",
+    "author_heuristic_processed_at",
+    "author_needs_llm",
+    "author_llm_status",
+    "author_llm_result",
+    "author_llm_processed_at",
+    "author_flags",
+    "author_faculty",
+    "author_ou",
 }
 
 
@@ -307,12 +325,21 @@ def save_record_field(resource_id: str, field_key: str, new_value: str, engine=N
     else:
         db_value = val_stripped if val_stripped else None
 
+    rid_int = int(resource_id)
+
     with engine.begin() as conn:
         conn.execute(text(f"""
             UPDATE "{schema}"."{target_table}"
             SET "{field_key}" = :val
             WHERE resource_id = :rid
-        """), {"val": db_value, "rid": int(resource_id)})
+        """), {"val": db_value, "rid": rid_int})
+
+        # Always stamp the queue row so we can show "pending changes" on home page
+        conn.execute(text(f"""
+            UPDATE "{schema}"."{queue}"
+            SET librarian_modified_at = now()
+            WHERE resource_id = :rid
+        """), {"rid": rid_int})
 
 
 def mark_checked(resource_id: str, engine=None) -> None:

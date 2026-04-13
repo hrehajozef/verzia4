@@ -97,6 +97,133 @@ def _assign_group(
     return GROUP_SINGLE
 
 
+SEARCH_FIELD_CONDITIONS: dict[str, str] = {
+    "id":      'm.resource_id::text ILIKE :q',
+    "title":   'array_to_string(m."dc.title", \' \') ILIKE :q',
+    "authors": 'array_to_string(m."dc.contributor.author", \' \') ILIKE :q',
+    "year":    'COALESCE(m."dc.date.issued"[1], \'\') ILIKE :q',
+    "journal": 'array_to_string(m."dc.relation.ispartof", \' \') ILIKE :q',
+    "voliss":  'CONCAT(COALESCE(m."utb.relation.volume",\'\'), \'/\', COALESCE(m."utb.relation.issue",\'\')) ILIKE :q',
+    "doi":     'array_to_string(m."dc.identifier.doi", \' \') ILIKE :q',
+}
+
+
+def search_records(
+    q:                str,
+    fields:           list[str],
+    include_processed: bool = False,
+    limit:            int = 10,
+    engine=None,
+) -> list[dict]:
+    """Fulltextové vyhľadávanie v záznamoch. Vracia zoznam dict pre JSON."""
+    engine = engine or get_local_engine()
+    schema = settings.local_schema
+    table  = settings.local_table
+    queue  = QUEUE_TABLE
+
+    valid_fields = [f for f in fields if f in SEARCH_FIELD_CONDITIONS]
+    if not valid_fields or not q.strip():
+        return []
+
+    field_sql       = " OR ".join(SEARCH_FIELD_CONDITIONS[f] for f in valid_fields)
+    processed_filter = "" if include_processed else "AND q.librarian_checked_at IS NULL"
+
+    sql = f"""
+        SELECT
+            m.resource_id,
+            m."dc.title"               AS title_arr,
+            m."dc.contributor.author"  AS authors_arr,
+            m."dc.date.issued"         AS issued_arr,
+            m."dc.relation.ispartof"   AS journal_arr,
+            m."utb.relation.volume"    AS volume,
+            m."utb.relation.issue"     AS issue,
+            m."dc.identifier.doi"      AS doi_arr
+        FROM "{schema}"."{table}" m
+        JOIN "{schema}"."{queue}" q ON m.resource_id = q.resource_id
+        WHERE m.withdrawn = FALSE
+          AND ({field_sql})
+          {processed_filter}
+        ORDER BY m."dc.date.issued"[1] ASC NULLS LAST
+        LIMIT :limit
+    """
+
+    with engine.connect() as conn:
+        rows = conn.execute(text(sql), {"q": f"%{q}%", "limit": limit}).fetchall()
+
+    results = []
+    for row in rows:
+        vol   = str(row.volume).strip() if row.volume else ""
+        iss   = str(row.issue).strip()  if row.issue  else ""
+        voliss = f"{vol}/{iss}" if vol and iss else (vol or iss)
+        results.append({
+            "resource_id": str(row.resource_id),
+            "title":       _first(row.title_arr)   or "",
+            "authors":     _to_list(row.authors_arr)[:3],
+            "year":        _first(row.issued_arr)  or "",
+            "journal":     _first(row.journal_arr) or "",
+            "voliss":      voliss,
+            "doi":         _first(row.doi_arr)     or "",
+        })
+    return results
+
+
+def fetch_pending_records(engine=None) -> list[RecordRow]:
+    """
+    Načíta záznamy s uloženými zmenami čakajúcimi na schválenie.
+    Kritérium: librarian_modified_at IS NOT NULL AND librarian_checked_at IS NULL.
+    """
+    engine = engine or get_local_engine()
+    schema = settings.local_schema
+    table  = settings.local_table
+    queue  = QUEUE_TABLE
+
+    with engine.connect() as conn:
+        rows = conn.execute(text(f"""
+            SELECT
+                m.resource_id,
+                m."dc.title"               AS title_arr,
+                m."dc.contributor.author"  AS authors_arr,
+                m."dc.date.issued"         AS issued_arr,
+                m."dc.relation.ispartof"   AS journal_arr,
+                m."utb.relation.volume"    AS volume,
+                m."utb.relation.issue"     AS issue,
+                m."utb.source"             AS source_arr,
+                m."dc.identifier.doi"      AS doi_arr,
+                m."dc.identifier.issn"     AS issn_arr,
+                m."dc.identifier.isbn"     AS isbn_arr,
+                q.librarian_modified_at
+            FROM "{schema}"."{table}" m
+            JOIN "{schema}"."{queue}" q ON m.resource_id = q.resource_id
+            WHERE q.librarian_modified_at IS NOT NULL
+              AND q.librarian_checked_at IS NULL
+              AND m.withdrawn = FALSE
+            ORDER BY q.librarian_modified_at DESC
+        """)).fetchall()
+
+    result = []
+    for row in rows:
+        source_arr = _to_list(row.source_arr)
+        has_wos, has_scopus, has_riv = _source_flags(source_arr)
+        rec = RecordRow(
+            resource_id = str(row.resource_id),
+            title       = _first(row.title_arr),
+            authors     = _to_list(row.authors_arr),
+            year        = _first(row.issued_arr),
+            journal     = _first(row.journal_arr),
+            volume      = str(row.volume).strip() if row.volume else None,
+            issue       = str(row.issue).strip() if row.issue else None,
+            source      = source_arr,
+            has_wos     = has_wos,
+            has_scopus  = has_scopus,
+            has_riv     = has_riv,
+            doi         = _first(row.doi_arr),
+            issn        = _to_list(row.issn_arr),
+            isbn        = _to_list(row.isbn_arr),
+        )
+        result.append(rec)
+    return result
+
+
 def fetch_unchecked_records(
     sort:   str = "oldest",
     engine = None,

@@ -1,0 +1,501 @@
+{% extends "base.html" %}
+
+{# ── Macro pre kartu príkazu ── #}
+{% macro cmd_card(command, desc, badge=None) %}
+<div class="cmd-card" data-cmd="{{ command }}">
+  <div class="cmd-card-header">
+    <span class="cmd-arrow">▼</span>
+    <span class="cmd-name">{{ command }}</span>
+    <span class="cmd-desc">{{ desc }}</span>
+    {% if badge %}<span class="cmd-badge">{{ badge }}</span>{% endif %}
+    <button class="btn btn-sm btn-utb py-0 px-2 ms-auto flex-shrink-0"
+            style="font-size:0.75rem;"
+            data-run-btn="{{ command }}">
+      Spustiť
+    </button>
+  </div>
+  {% if caller %}
+  <div class="cmd-body">
+    {{ caller() }}
+  </div>
+  {% endif %}
+</div>
+{% endmacro %}
+
+{% block title %}Pipeline – UTB Metadata Review{% endblock %}
+
+{% block extra_css %}
+<style>
+.pipeline-section { margin-bottom: 2rem; }
+.pipeline-section-title {
+  font-size: 0.7rem;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  color: #888;
+  border-bottom: 1px solid #e0e0e0;
+  padding-bottom: 4px;
+  margin-bottom: 0.75rem;
+}
+.cmd-card {
+  border: 1px solid #dee2e6;
+  border-radius: 6px;
+  margin-bottom: 0.6rem;
+  background: #fafafa;
+}
+.cmd-card-header {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.5rem 0.75rem;
+  cursor: pointer;
+  user-select: none;
+}
+.cmd-card-header:hover { background: #f0f4ff; border-radius: 6px; }
+.cmd-name {
+  font-family: monospace;
+  font-weight: 700;
+  font-size: 0.9rem;
+  color: #0d47a1;
+}
+.cmd-desc {
+  font-size: 0.8rem;
+  color: #555;
+  flex: 1;
+}
+.cmd-badge {
+  font-size: 0.65rem;
+  background: #e3f2fd;
+  color: #0d47a1;
+  border: 1px solid #90caf9;
+  border-radius: 3px;
+  padding: 1px 5px;
+}
+.cmd-body {
+  padding: 0.5rem 0.75rem 0.75rem;
+  border-top: 1px solid #eee;
+}
+.cmd-options { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin-bottom: 0.5rem; }
+.cmd-option label { font-size: 0.8rem; color: #444; display: block; }
+.cmd-option input[type=text],
+.cmd-option input[type=number],
+.cmd-option select { font-size: 0.8rem; }
+.cmd-option.d-flex label { display: inline; }
+
+/* ── Output panel ── */
+#pipeline-output-wrap {
+  position: sticky;
+  top: 56px;
+  background: #1e1e1e;
+  color: #d4d4d4;
+  border-radius: 6px;
+  padding: 0.75rem 1rem;
+  min-height: 200px;
+  max-height: 60vh;
+  overflow-y: auto;
+  font-family: monospace;
+  font-size: 0.8rem;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+#pipeline-output-wrap .out-ok    { color: #4ec9b0; }
+#pipeline-output-wrap .out-err   { color: #f44747; }
+#pipeline-output-wrap .out-start { color: #ce9178; }
+#pipeline-status { font-size: 0.75rem; margin-top: 4px; }
+</style>
+{% endblock %}
+
+{% block content %}
+<div class="d-flex align-items-center mb-3 gap-3">
+  <h4 class="mb-0">Pipeline</h4>
+  <span class="text-muted small">Spúšťanie príkazov spracovania metadát</span>
+</div>
+
+<div class="row g-3">
+
+  <!-- ── Ľavý stĺpec: príkazy ── -->
+  <div class="col-lg-7">
+
+    <!-- Bootstrap & Setup -->
+    <div class="pipeline-section">
+      <div class="pipeline-section-title">Bootstrap &amp; Setup</div>
+
+      {% call cmd_card("bootstrap", "Inicializácia lokálnej DB – skopíruje remote tabuľku") %}
+        <div class="cmd-options">
+          <div class="cmd-option d-flex align-items-center gap-1">
+            <input type="checkbox" name="drop" id="opt-bootstrap-drop" class="form-check-input">
+            <label for="opt-bootstrap-drop">--drop (zmaže a znovu vytvorí)</label>
+          </div>
+        </div>
+      {% endcall %}
+
+      {% call cmd_card("import-authors", "Import interných autorov z CSV") %}{% endcall %}
+      {% call cmd_card("queue-setup", "Vytvorí tabuľku utb_processing_queue", badge="raz") %}{% endcall %}
+    </div>
+
+    <!-- Validácia -->
+    <div class="pipeline-section">
+      <div class="pipeline-section-title">Validácia</div>
+
+      {% call cmd_card("validate-setup", "Pridá validation stĺpce do DB", badge="raz") %}{% endcall %}
+
+      {% call cmd_card("validate", "Validácia kvality metadát + návrhy opráv") %}
+        <div class="cmd-options">
+          <div class="cmd-option">
+            <label>--limit</label>
+            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
+          </div>
+          <div class="cmd-option">
+            <label>--batch-size</label>
+            <input type="number" name="batch_size" value="500" min="1" class="form-control form-control-sm" style="width:100px">
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="revalidate" id="opt-val-rev" class="form-check-input">
+            <label for="opt-val-rev">--revalidate</label>
+          </div>
+        </div>
+      {% endcall %}
+
+      {% call cmd_card("apply-fixes", "Aplikuje navrhnuté opravy do DB") %}
+        <div class="cmd-options">
+          <div class="cmd-option">
+            <label>--limit</label>
+            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="preview" id="opt-apfix-prev" class="form-check-input">
+            <label for="opt-apfix-prev">--preview</label>
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="dry_run" id="opt-apfix-dry" class="form-check-input">
+            <label for="opt-apfix-dry">--dry-run</label>
+          </div>
+        </div>
+      {% endcall %}
+
+      {% call cmd_card("validate-status", "Štatistiky validácie", badge="info") %}{% endcall %}
+    </div>
+
+    <!-- Heuristiky – Autori -->
+    <div class="pipeline-section">
+      <div class="pipeline-section-title">Heuristiky – Autori</div>
+
+      {% call cmd_card("heuristics", "Heuristické spracovanie mien a afiliácií autorov") %}
+        <div class="cmd-options">
+          <div class="cmd-option">
+            <label>--limit</label>
+            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="reprocess" id="opt-h-rp" class="form-check-input">
+            <label for="opt-h-rp">--reprocess</label>
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="reprocess_errors" id="opt-h-re" class="form-check-input">
+            <label for="opt-h-re">--reprocess-errors</label>
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="normalize" id="opt-h-norm" class="form-check-input">
+            <label for="opt-h-norm">--normalize</label>
+          </div>
+        </div>
+      {% endcall %}
+
+      {% call cmd_card("heuristics-llm", "LLM spracovanie autorov (needs_llm=TRUE)") %}
+        <div class="cmd-options">
+          <div class="cmd-option">
+            <label>--limit</label>
+            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
+          </div>
+          <div class="cmd-option">
+            <label>--provider</label>
+            <select name="provider" class="form-select form-select-sm" style="width:120px">
+              <option value="">(z .env)</option>
+              <option value="ollama">ollama</option>
+              <option value="openai">openai</option>
+            </select>
+          </div>
+        </div>
+      {% endcall %}
+
+      {% call cmd_card("heuristics-compare", "Porovnanie výsledkov vs. knihovník", badge="info") %}{% endcall %}
+      {% call cmd_card("heuristics-status", "Štatistiky spracovania autorov", badge="info") %}{% endcall %}
+    </div>
+
+    <!-- Heuristiky – Dátumy -->
+    <div class="pipeline-section">
+      <div class="pipeline-section-title">Heuristiky – Dátumy</div>
+
+      {% call cmd_card("dates-setup", "Pridá DATE stĺpce do DB", badge="raz") %}{% endcall %}
+
+      {% call cmd_card("dates", "Parsovanie dátumov z utb_fulltext_dates") %}
+        <div class="cmd-options">
+          <div class="cmd-option">
+            <label>--limit</label>
+            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
+          </div>
+          <div class="cmd-option">
+            <label>--batch-size</label>
+            <input type="number" name="batch_size" value="200" min="1" class="form-control form-control-sm" style="width:100px">
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="reprocess" id="opt-d-rp" class="form-check-input">
+            <label for="opt-d-rp">--reprocess</label>
+          </div>
+        </div>
+      {% endcall %}
+
+      {% call cmd_card("dates-llm", "LLM spracovanie dátumov (date_needs_llm=TRUE)") %}
+        <div class="cmd-options">
+          <div class="cmd-option">
+            <label>--limit</label>
+            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
+          </div>
+          <div class="cmd-option">
+            <label>--provider</label>
+            <select name="provider" class="form-select form-select-sm" style="width:120px">
+              <option value="">(z .env)</option>
+              <option value="ollama">ollama</option>
+              <option value="openai">openai</option>
+            </select>
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="reprocess" id="opt-dl-rp" class="form-check-input">
+            <label for="opt-dl-rp">--reprocess</label>
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="include_dash" id="opt-dl-dash" class="form-check-input">
+            <label for="opt-dl-dash">--include-dash</label>
+          </div>
+        </div>
+      {% endcall %}
+
+      {% call cmd_card("dates-status", "Štatistiky dátumov", badge="info") %}{% endcall %}
+    </div>
+
+    <!-- Normalizácia -->
+    <div class="pipeline-section">
+      <div class="pipeline-section-title">Normalizácia Publisher / Ispartof</div>
+
+      {% call cmd_card("journals-setup", "Pridá journal_norm_* stĺpce do DB", badge="raz") %}{% endcall %}
+
+      {% call cmd_card("journals-lookup", "Lookup ISSN/ISBN cez Crossref / Google Books") %}
+        <div class="cmd-options">
+          <div class="cmd-option">
+            <label>--limit</label>
+            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="reprocess" id="opt-jl-rp" class="form-check-input">
+            <label for="opt-jl-rp">--reprocess</label>
+          </div>
+        </div>
+      {% endcall %}
+
+      {% call cmd_card("journals-status", "Štatistiky normalizácie", badge="info") %}{% endcall %}
+    </div>
+
+    <!-- Deduplikácia -->
+    <div class="pipeline-section">
+      <div class="pipeline-section-title">Deduplikácia</div>
+
+      {% call cmd_card("dedup-setup", "Vytvorí tabuľku dedup_histoire", badge="raz") %}{% endcall %}
+
+      {% call cmd_card("deduplicate", "Nájde a zlúči duplikáty") %}
+        <div class="cmd-options">
+          <div class="cmd-option">
+            <label>--by</label>
+            <input type="text" name="by" value="dc.identifier.doi" class="form-control form-control-sm" style="width:200px">
+          </div>
+          <div class="cmd-option">
+            <label>--threshold</label>
+            <input type="number" name="threshold" value="0" min="0" max="1" step="0.01" class="form-control form-control-sm" style="width:100px">
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="no_fuzzy" id="opt-dd-nf" class="form-check-input">
+            <label for="opt-dd-nf">--no-fuzzy</label>
+          </div>
+          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
+            <input type="checkbox" name="dry_run" id="opt-dd-dry" class="form-check-input">
+            <label for="opt-dd-dry">--dry-run</label>
+          </div>
+        </div>
+      {% endcall %}
+
+      {% call cmd_card("dedup-status", "Štatistiky deduplikácie", badge="info") %}{% endcall %}
+    </div>
+
+  </div><!-- /col-lg-7 -->
+
+  <!-- ── Pravý stĺpec: výstup ── -->
+  <div class="col-lg-5">
+    <div class="fw-semibold small mb-1 text-muted">Výstup príkazu</div>
+    <div id="pipeline-output-wrap">
+      <span class="text-muted" style="font-size:0.75rem;">Zvolte príkaz a stlačte Spustiť…</span>
+    </div>
+    <div id="pipeline-status" class="text-muted mt-1"></div>
+    <button id="pipeline-stop-btn" class="btn btn-sm btn-outline-danger mt-2 d-none"
+            onclick="window.pipelineStop()">Zastaviť</button>
+  </div>
+
+</div><!-- /row -->
+{% endblock %}
+
+{% block extra_js %}
+<script>
+(function () {
+  "use strict";
+
+  var runningCmd = null;
+  var runningReader = null;
+
+  window.pipelineStop = function () {
+    if (runningReader) {
+      runningReader.cancel();
+      runningReader = null;
+    }
+    appendOutput("[ZASTAVENÉ] Príkaz bol prerušený.");
+    setStatus("Zastavené.", "text-warning");
+    document.getElementById("pipeline-stop-btn").classList.add("d-none");
+    if (runningCmd) {
+      var btn = document.querySelector('[data-run-btn="' + runningCmd + '"]');
+      if (btn) { btn.disabled = false; btn.textContent = "Spustiť"; }
+      runningCmd = null;
+    }
+  };
+
+  function appendOutput(line) {
+    var wrap = document.getElementById("pipeline-output-wrap");
+    if (!wrap) return;
+    var ph = wrap.querySelector(".text-muted");
+    if (ph && ph.textContent.includes("Zvolte")) ph.remove();
+
+    var span = document.createElement("span");
+    if (line.startsWith("Spúšťam:")) {
+      span.className = "out-start";
+    } else if (line.includes("[HOTOVO]") || line.includes("[OK]")) {
+      span.className = "out-ok";
+    } else if (line.includes("[CHYBA]") || line.includes("[VÝNIMKA]") || line.includes("Error")) {
+      span.className = "out-err";
+    }
+    span.textContent = line + "\n";
+    wrap.appendChild(span);
+    wrap.scrollTop = wrap.scrollHeight;
+  }
+
+  function setStatus(text, cls) {
+    var el = document.getElementById("pipeline-status");
+    if (!el) return;
+    el.textContent = text;
+    el.className = "small mt-1 " + (cls || "text-muted");
+  }
+
+  function runCommand(command, bodyEl) {
+    if (runningReader) window.pipelineStop();
+
+    document.getElementById("pipeline-output-wrap").innerHTML = "";
+
+    var params = new URLSearchParams();
+    params.append("command", command);
+    if (bodyEl) {
+      bodyEl.querySelectorAll("input, select").forEach(function (el) {
+        if (!el.name) return;
+        if (el.type === "checkbox") {
+          if (el.checked) params.append(el.name, "on");
+        } else if (el.value !== "" && el.value !== "0" || el.name === "by") {
+          params.append(el.name, el.value);
+        }
+      });
+    }
+
+    var btn = document.querySelector('[data-run-btn="' + command + '"]');
+    if (btn) { btn.disabled = true; btn.textContent = "Beží…"; }
+    runningCmd = command;
+    document.getElementById("pipeline-stop-btn").classList.remove("d-none");
+    setStatus("Beží: " + command + "…", "text-primary");
+
+    fetch("/pipeline/run", {
+      method: "POST",
+      body: params,
+      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    }).then(function (resp) {
+      var reader = resp.body.getReader();
+      runningReader = reader;
+      var decoder = new TextDecoder();
+      var buffer = "";
+
+      function read() {
+        reader.read().then(function (result) {
+          if (result.done) {
+            finish(true);
+            return;
+          }
+          buffer += decoder.decode(result.value, { stream: true });
+          var parts = buffer.split("\n\n");
+          buffer = parts.pop();
+          parts.forEach(function (block) {
+            if (block.startsWith("event: done")) { finish(true); return; }
+            block.split("\n").forEach(function (ln) {
+              if (ln.startsWith("data: ")) appendOutput(ln.slice(6));
+            });
+          });
+          read();
+        }).catch(function () { finish(false); });
+      }
+
+      function finish(ok) {
+        runningReader = null;
+        runningCmd    = null;
+        if (btn) { btn.disabled = false; btn.textContent = "Spustiť"; }
+        document.getElementById("pipeline-stop-btn").classList.add("d-none");
+        setStatus(ok ? "Dokončené." : "Chyba.", ok ? "text-success" : "text-danger");
+      }
+
+      read();
+    }).catch(function (err) {
+      appendOutput("[FETCH CHYBA] " + err);
+      if (btn) { btn.disabled = false; btn.textContent = "Spustiť"; }
+      setStatus("Chyba spojenia.", "text-danger");
+      runningCmd = null;
+    });
+  }
+
+  document.addEventListener("DOMContentLoaded", function () {
+    // Wire run buttons
+    document.querySelectorAll("[data-run-btn]").forEach(function (btn) {
+      btn.addEventListener("click", function (e) {
+        e.stopPropagation();
+        var cmd  = btn.dataset.runBtn;
+        var card = btn.closest(".cmd-card");
+        var body = card ? card.querySelector(".cmd-body") : null;
+        runCommand(cmd, body);
+      });
+    });
+
+    // Collapsible cards
+    document.querySelectorAll(".cmd-card-header").forEach(function (hdr) {
+      hdr.addEventListener("click", function (e) {
+        if (e.target.closest("[data-run-btn]")) return;
+        var body = hdr.nextElementSibling;
+        if (!body || !body.classList.contains("cmd-body")) return;
+        var open = body.style.display !== "none";
+        body.style.display = open ? "none" : "";
+        var arrow = hdr.querySelector(".cmd-arrow");
+        if (arrow) arrow.textContent = open ? "▶" : "▼";
+      });
+    });
+
+    // Collapse cards that have no options (body is empty / only whitespace)
+    document.querySelectorAll(".cmd-card .cmd-body").forEach(function (body) {
+      var hasInputs = body.querySelector("input, select");
+      if (!hasInputs) {
+        body.style.display = "none";
+        var arrow = body.previousElementSibling && body.previousElementSibling.querySelector(".cmd-arrow");
+        if (arrow) arrow.textContent = "▶";
+      }
+    });
+  });
+})();
+</script>
+{% endblock %}

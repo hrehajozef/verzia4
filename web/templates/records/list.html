@@ -2,6 +2,361 @@
 
 {% block title %}Záznamy na kontrolu – UTB Metadata Review{% endblock %}
 
+{% block extra_js %}
+<script>
+// ── Skrývanie/zobrazovanie sekcií záznamov ───────────────────────────────────
+window.toggleRecordGroup = function (headingEl) {
+  var body = headingEl.nextElementSibling;
+  if (!body || !body.classList.contains("group-body")) return;
+  var arrow = headingEl.querySelector(".group-toggle-arrow");
+  var open = body.style.display !== "none";
+  body.style.display = open ? "none" : "";
+  if (arrow) arrow.textContent = open ? "▶" : "▼";
+};
+
+(function () {
+  "use strict";
+
+  // ── Resize stĺpcov ───────────────────────────────────────────────────────────
+  var resizeState = null;
+
+  function initListResize() {
+    document.querySelectorAll(".list-table:not([data-resize-init])").forEach(function (table) {
+      table.setAttribute("data-resize-init", "1");
+      table.querySelectorAll("thead th").forEach(function (th) {
+        var handle = th.querySelector(".list-resize-handle");
+        if (!handle) return;
+        handle.addEventListener("mousedown", function (e) {
+          e.preventDefault();
+          resizeState = {
+            cols: table.querySelectorAll("colgroup col"),
+            colIndex: th.cellIndex,
+            startX: e.clientX,
+            startW: th.offsetWidth,
+          };
+          document.body.classList.add("col-resizing");
+        });
+      });
+    });
+  }
+
+  document.addEventListener("mousemove", function (e) {
+    if (!resizeState) return;
+    var newW = Math.max(40, resizeState.startW + (e.clientX - resizeState.startX));
+    var col = resizeState.cols[resizeState.colIndex];
+    if (col) col.style.width = newW + "px";
+  });
+
+  document.addEventListener("mouseup", function () {
+    if (!resizeState) return;
+    resizeState = null;
+    document.body.classList.remove("col-resizing");
+  });
+
+  // ── Sort tlačidlá – aktívna farba ────────────────────────────────────────────
+  function updateSortButtons() {
+    var sortEl = document.querySelector("[data-active-sort]");
+    if (!sortEl) return;
+    var activeSort = sortEl.dataset.activeSort;
+    document.querySelectorAll("[data-sort-key]").forEach(function (btn) {
+      var isActive = btn.dataset.sortKey === activeSort;
+      btn.classList.toggle("btn-utb", isActive);
+      btn.classList.toggle("btn-outline-secondary", !isActive);
+    });
+  }
+
+  // ── Search ───────────────────────────────────────────────────────────────────
+  var DEBOUNCE_MS = 1000;
+  var debounceTimer = null;
+  var savedGroupsHTML = null;
+
+  function escHtml(s) {
+    return (s || "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+  }
+
+  function getActiveFields() {
+    return Array.from(document.querySelectorAll(".search-field-cb:checked")).map(function (cb) {
+      return cb.value;
+    });
+  }
+
+  function getRecordsFromDOM() {
+    var records = [];
+    document.querySelectorAll(".record-row[data-rid]").forEach(function (tr) {
+      records.push({
+        resource_id: tr.dataset.rid,
+        id:      tr.dataset.rid     || "",
+        title:   tr.dataset.title   || "",
+        authors: tr.dataset.authors || "",
+        year:    tr.dataset.year    || "",
+        journal: tr.dataset.journal || "",
+        voliss:  tr.dataset.voliss  || "",
+        doi:     tr.dataset.doi     || "",
+        _tr: tr,
+      });
+    });
+    return records;
+  }
+
+  function scoreRecord(rec, q, fields) {
+    var qL = q.toLowerCase();
+    var score = 0;
+    fields.forEach(function (f) {
+      var val = (rec[f] || "").toLowerCase();
+      if (val.includes(qL)) score += (f === "title" ? 2 : 1);
+    });
+    return score;
+  }
+
+  function filterRecords(records, q, fields) {
+    if (!q.trim()) return [];
+    return records
+      .map(function (rec) { return { rec: rec, score: scoreRecord(rec, q, fields) }; })
+      .filter(function (x) { return x.score > 0; })
+      .sort(function (a, b) { return b.score - a.score; })
+      .map(function (x) { return x.rec; });
+  }
+
+  function hideSuggestions() {
+    var el = document.getElementById("search-suggestions");
+    if (el) { el.classList.add("d-none"); el.innerHTML = ""; }
+  }
+
+  function showSuggestions(matches) {
+    var container = document.getElementById("search-suggestions");
+    if (!container) return;
+    if (!matches.length) { hideSuggestions(); return; }
+    var top10 = matches.slice(0, 10);
+    container.innerHTML = top10.map(function (rec) {
+      var authors = rec.authors
+        ? escHtml(rec.authors.substring(0, 70)) + (rec.authors.length > 70 ? "…" : "")
+        : "";
+      return '<a href="/record/' + encodeURIComponent(rec.resource_id) +
+        '" class="search-suggestion-item d-block px-3 py-2 text-decoration-none">' +
+        '<div class="fw-semibold small text-dark">' + escHtml(rec.title || "(bez názvu)") + "</div>" +
+        '<div class="text-muted" style="font-size:0.75rem;">' +
+        authors + (rec.year ? (authors ? " · " : "") + escHtml(rec.year) : "") +
+        "</div></a>";
+    }).join("");
+    container.classList.remove("d-none");
+  }
+
+  function setSearchActiveUI(active) {
+    var btn = document.getElementById("search-clear-btn");
+    if (btn) btn.classList.toggle("d-none", !active);
+  }
+
+  function clearSearchResults() {
+    hideSuggestions();
+    if (savedGroupsHTML !== null) {
+      var container = document.getElementById("groups-container");
+      if (container) {
+        container.innerHTML = savedGroupsHTML;
+        savedGroupsHTML = null;
+        initListResize();
+      }
+    } else {
+      document.querySelectorAll(".record-row").forEach(function (tr) { tr.style.display = ""; });
+      document.querySelectorAll(".record-group").forEach(function (g) { g.style.display = ""; });
+    }
+    setSearchActiveUI(false);
+  }
+
+  function applyClientFilter(matches, allRecords) {
+    hideSuggestions();
+    var matchSet = new Set(matches.map(function (r) { return r.resource_id; }));
+    allRecords.forEach(function (rec) {
+      if (rec._tr) rec._tr.style.display = matchSet.has(rec.resource_id) ? "" : "none";
+    });
+    document.querySelectorAll(".record-group").forEach(function (group) {
+      var hasVisible = Array.from(group.querySelectorAll(".record-row")).some(function (tr) {
+        return tr.style.display !== "none";
+      });
+      group.style.display = hasVisible ? "" : "none";
+    });
+    setSearchActiveUI(true);
+  }
+
+  function showServerResults(results, q) {
+    hideSuggestions();
+    var container = document.getElementById("groups-container");
+    if (!container) return;
+    if (savedGroupsHTML === null) savedGroupsHTML = container.innerHTML;
+
+    if (!results.length) {
+      container.innerHTML = '<p class="text-muted py-3">Žiadne výsledky pre „' + escHtml(q) + '".</p>';
+      setSearchActiveUI(true);
+      return;
+    }
+
+    var rows = results.map(function (rec) {
+      var authorsArr = rec.authors || [];
+      var authorsTxt = authorsArr.slice(0, 2).join("; ") + (authorsArr.length > 2 ? " …" : "");
+      return '<tr class="record-row" style="cursor:pointer" onclick="window.location=\'/record/' +
+        encodeURIComponent(rec.resource_id) + '\'" data-rid="' + escHtml(rec.resource_id) + '"' +
+        ' data-title="' + escHtml(rec.title) + '" data-authors="' + escHtml(authorsArr.slice(0, 3).join("; ")) + '"' +
+        ' data-year="' + escHtml(rec.year) + '" data-journal="' + escHtml(rec.journal) + '"' +
+        ' data-voliss="' + escHtml(rec.voliss) + '" data-doi="' + escHtml(rec.doi) + '">' +
+        '<td class="text-muted small text-nowrap" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;" title="' + escHtml(rec.resource_id) + '">' + escHtml(rec.resource_id) + "</td>" +
+        '<td style="word-break:break-word;"><a href="/record/' + encodeURIComponent(rec.resource_id) +
+        '" class="text-decoration-none text-dark">' + escHtml(rec.title || "(bez názvu)") + "</a></td>" +
+        '<td class="text-muted small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(authorsTxt) + "</td>" +
+        '<td class="text-nowrap">' + escHtml(rec.year || "—") + "</td>" +
+        '<td class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + escHtml(rec.journal || "—") + "</td>" +
+        '<td class="text-nowrap small">' + escHtml(rec.voliss || "—") + "</td>" +
+        '<td class="small" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' +
+        (rec.doi ? '<span title="' + escHtml(rec.doi) + '">' + escHtml(rec.doi) + "</span>" : "—") + "</td></tr>";
+    }).join("");
+
+    container.innerHTML =
+      '<section class="record-group mb-4">' +
+      '<div class="group-heading"><span>Výsledky pre „' + escHtml(q) + '"</span>' +
+      '<span class="group-heading-badge">' + results.length + ' záznamov</span></div>' +
+      '<div class="table-responsive">' +
+      '<table class="table table-hover table-sm align-middle" style="table-layout:fixed;min-width:900px;">' +
+      '<colgroup><col style="width:8%"><col style="width:30%"><col style="width:17%"><col style="width:5%"><col style="width:15%"><col style="width:8%"><col style="width:17%"></colgroup>' +
+      '<thead class="table-light"><tr><th>ID</th><th>Názov</th><th>Autori</th><th>Rok</th><th>Časopis</th><th>Volume/Issue</th><th>DOI</th></tr></thead>' +
+      '<tbody>' + rows + "</tbody></table></div></section>";
+
+    setSearchActiveUI(true);
+  }
+
+  async function doDebounceSearch() {
+    var input = document.getElementById("search-input");
+    var q = input ? input.value.trim() : "";
+    if (!q) { clearSearchResults(); return; }
+
+    var fields = getActiveFields();
+    var includeProcessed = document.getElementById("include-processed-cb");
+    var isProcessed = includeProcessed && includeProcessed.checked;
+
+    if (isProcessed) {
+      try {
+        var params = new URLSearchParams({ q: q, limit: 10 });
+        fields.forEach(function (f) { params.append("fields", f); });
+        params.set("include_processed", "1");
+        var resp = await fetch("/api/search?" + params);
+        if (resp.ok) {
+          var data = await resp.json();
+          var mapped = (data.results || []).map(function (r) {
+            return {
+              resource_id: r.resource_id,
+              title: r.title,
+              authors: (r.authors || []).join("; "),
+              year: r.year,
+            };
+          });
+          showSuggestions(mapped);
+        }
+      } catch (err) { console.warn("Search error:", err); }
+    } else {
+      var allRecords = getRecordsFromDOM();
+      showSuggestions(filterRecords(allRecords, q, fields));
+    }
+  }
+
+  async function doFullSearch() {
+    var input = document.getElementById("search-input");
+    var q = input ? input.value.trim() : "";
+    clearTimeout(debounceTimer);
+    hideSuggestions();
+    if (!q) { clearSearchResults(); return; }
+
+    var fields = getActiveFields();
+    var includeProcessed = document.getElementById("include-processed-cb");
+    var isProcessed = includeProcessed && includeProcessed.checked;
+
+    if (isProcessed) {
+      try {
+        var params = new URLSearchParams({ q: q, limit: 200 });
+        fields.forEach(function (f) { params.append("fields", f); });
+        params.set("include_processed", "1");
+        var resp = await fetch("/api/search?" + params);
+        if (resp.ok) { showServerResults((await resp.json()).results || [], q); }
+      } catch (err) { console.warn("Full search error:", err); }
+    } else {
+      var allRecords = getRecordsFromDOM();
+      applyClientFilter(filterRecords(allRecords, q, fields), allRecords);
+    }
+  }
+
+  function updateToggleAllBtn() {
+    var btn = document.getElementById("search-toggle-all-btn");
+    if (!btn) return;
+    var cbs = document.querySelectorAll(".search-field-cb");
+    var allChecked = Array.from(cbs).every(function (cb) { return cb.checked; });
+    btn.textContent = allChecked ? "Odkliknúť všetko" : "Zakliknúť všetko";
+  }
+
+  function initSearch() {
+    var input = document.getElementById("search-input");
+    if (!input || input._searchInit) return;
+    input._searchInit = true;
+
+    // Toggle-all tlačidlo
+    var toggleAllBtn = document.getElementById("search-toggle-all-btn");
+    if (toggleAllBtn) {
+      updateToggleAllBtn();
+      toggleAllBtn.addEventListener("click", function () {
+        var cbs = document.querySelectorAll(".search-field-cb");
+        var allChecked = Array.from(cbs).every(function (cb) { return cb.checked; });
+        cbs.forEach(function (cb) { cb.checked = !allChecked; });
+        updateToggleAllBtn();
+      });
+    }
+    document.querySelectorAll(".search-field-cb").forEach(function (cb) {
+      cb.addEventListener("change", updateToggleAllBtn);
+    });
+
+    input.addEventListener("input", function () {
+      clearTimeout(debounceTimer);
+      var q = input.value.trim();
+      if (!q) { clearSearchResults(); return; }
+      debounceTimer = setTimeout(doDebounceSearch, DEBOUNCE_MS);
+    });
+
+    input.addEventListener("keydown", function (e) {
+      if (e.key === "Enter") { e.preventDefault(); doFullSearch(); }
+      if (e.key === "Escape") { clearTimeout(debounceTimer); input.value = ""; clearSearchResults(); }
+    });
+
+    var searchBtn = document.getElementById("search-btn");
+    if (searchBtn) searchBtn.addEventListener("click", doFullSearch);
+
+    var clearBtn = document.getElementById("search-clear-btn");
+    if (clearBtn) clearBtn.addEventListener("click", function () {
+      clearTimeout(debounceTimer); input.value = ""; clearSearchResults();
+    });
+
+    document.addEventListener("click", function (e) {
+      var section = document.getElementById("search-section");
+      if (section && !section.contains(e.target)) hideSuggestions();
+    });
+  }
+
+  // ── Inicializácia ─────────────────────────────────────────────────────────────
+  document.addEventListener("DOMContentLoaded", function () {
+    initListResize();
+    updateSortButtons();
+    initSearch();
+  });
+
+  document.addEventListener("htmx:afterSwap", function () {
+    initListResize();
+    updateSortButtons();
+    // Po HTMX sort swap – zrušíme search
+    savedGroupsHTML = null;
+    clearTimeout(debounceTimer);
+    hideSuggestions();
+    setSearchActiveUI(false);
+    var input = document.getElementById("search-input");
+    if (input) input.value = "";
+  });
+
+})();
+</script>
+{% endblock %}
+
 {% block content %}
 <div class="d-flex align-items-center justify-content-between mb-3">
   <div>
@@ -15,6 +370,7 @@
     {% for key, label in sort_labels.items() %}
     <button
       class="btn btn-sm {% if sort == key %}btn-utb{% else %}btn-outline-secondary{% endif %}"
+      data-sort-key="{{ key }}"
       hx-get="/?sort={{ key }}"
       hx-target="#groups-container"
       hx-swap="innerHTML"
@@ -23,6 +379,128 @@
     {% endfor %}
   </div>
 </div>
+
+<!-- Search bar -->
+<div class="mb-4 position-relative" id="search-section">
+  <div class="position-relative">
+    <div class="input-group">
+      <input type="text" id="search-input" class="form-control"
+             placeholder="Hľadať v záznamoch…" autocomplete="off">
+      <button class="btn btn-utb" id="search-btn" type="button">Hľadať</button>
+      <button class="btn btn-outline-secondary d-none" id="search-clear-btn"
+              type="button" title="Zrušiť hľadanie">✕</button>
+    </div>
+    <!-- Suggestions dropdown -->
+    <div id="search-suggestions"
+         class="d-none border rounded-bottom shadow-sm bg-white"
+         style="position:absolute; top:100%; left:0; right:0; z-index:200; max-height:420px; overflow-y:auto;">
+    </div>
+  </div>
+  <!-- Atribúty hľadania -->
+  <div class="d-flex flex-wrap align-items-center gap-3 mt-2" style="font-size:0.85rem;">
+    <span class="text-muted">Hľadať v:</span>
+    <label class="d-flex align-items-center gap-1 mb-0">
+      <input type="checkbox" class="form-check-input search-field-cb" value="id" checked> ID
+    </label>
+    <label class="d-flex align-items-center gap-1 mb-0">
+      <input type="checkbox" class="form-check-input search-field-cb" value="title" checked> Názov
+    </label>
+    <label class="d-flex align-items-center gap-1 mb-0">
+      <input type="checkbox" class="form-check-input search-field-cb" value="authors" checked> Autori
+    </label>
+    <label class="d-flex align-items-center gap-1 mb-0">
+      <input type="checkbox" class="form-check-input search-field-cb" value="year" checked> Rok
+    </label>
+    <label class="d-flex align-items-center gap-1 mb-0">
+      <input type="checkbox" class="form-check-input search-field-cb" value="journal" checked> Časopis
+    </label>
+    <label class="d-flex align-items-center gap-1 mb-0">
+      <input type="checkbox" class="form-check-input search-field-cb" value="voliss" checked> Vol/Iss
+    </label>
+    <label class="d-flex align-items-center gap-1 mb-0">
+      <input type="checkbox" class="form-check-input search-field-cb" value="doi" checked> DOI
+    </label>
+    <button type="button" id="search-toggle-all-btn"
+            class="btn btn-outline-secondary btn-sm py-0 px-2" style="font-size:0.8rem;">
+      Odkliknúť všetko
+    </button>
+    <span class="vr"></span>
+    <label class="d-flex align-items-center gap-1 mb-0 text-muted">
+      <input type="checkbox" class="form-check-input" id="include-processed-cb"> Zahrnúť spracované
+    </label>
+  </div>
+</div>
+
+{% if pending %}
+<!-- ── Záznamy čakajúce na schválenie ── -->
+<section class="record-group mb-4" id="group-pending">
+  <div class="group-heading" style="cursor:pointer; background: linear-gradient(90deg, #fff3e0 0%, #fffaf7 60%, #fff 100%); border-left-color: #f57c00;"
+       onclick="window.toggleRecordGroup(this)">
+    <span class="group-toggle-arrow me-2" style="font-size:0.85rem; flex-shrink:0;">▼</span>
+    <span>Zmeny čakajúce na schválenie</span>
+    <span class="group-heading-badge" style="border-color: #f57c00; color: #e65100;">{{ pending|length }} záznamov</span>
+  </div>
+  <div class="group-body">
+    <div class="table-responsive">
+      <table class="table table-hover table-sm align-middle list-table" style="table-layout:fixed; min-width:900px;">
+        <colgroup>
+          <col style="width:8%">
+          <col style="width:30%">
+          <col style="width:17%">
+          <col style="width:5%">
+          <col style="width:15%">
+          <col style="width:8%">
+          <col style="width:17%">
+        </colgroup>
+        <thead class="table-light">
+          <tr>
+            <th>ID</th>
+            <th>Názov</th>
+            <th>Autori</th>
+            <th>Rok</th>
+            <th>Časopis</th>
+            <th>Volume/Issue</th>
+            <th>DOI</th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rec in pending %}
+          {% set voliss_val = (rec.volume or '') + ('/' + rec.issue if rec.issue else '') if rec.volume else (rec.issue or '') %}
+          <tr class="record-row" style="cursor:pointer"
+              onclick="window.location='/record/{{ rec.resource_id }}'"
+              data-rid="{{ rec.resource_id }}"
+              data-title="{{ rec.title or '' }}"
+              data-authors="{{ rec.authors[:3] | join('; ') }}"
+              data-year="{{ rec.year or '' }}"
+              data-journal="{{ rec.journal or '' }}"
+              data-voliss="{{ voliss_val }}"
+              data-doi="{{ rec.doi or '' }}">
+            <td class="text-muted small" style="overflow:hidden; white-space:nowrap; text-overflow:ellipsis;"
+                title="{{ rec.resource_id }}">{{ rec.resource_id }}</td>
+            <td style="word-break:break-word;">
+              <a href="/record/{{ rec.resource_id }}" class="text-decoration-none text-dark">
+                {{ rec.title or '(bez názvu)' }}
+              </a>
+            </td>
+            <td class="text-muted small" style="overflow:hidden; word-break:break-word;">
+              {% if rec.authors %}
+                {{ rec.authors[:2] | join('; ') }}{% if rec.authors|length > 2 %} …{% endif %}
+              {% endif %}
+            </td>
+            <td class="text-nowrap small">{{ rec.year or '—' }}</td>
+            <td class="small" style="overflow:hidden; word-break:break-word;">{{ rec.journal or '—' }}</td>
+            <td class="text-nowrap small">{{ voliss_val or '—' }}</td>
+            <td class="small" style="overflow:hidden; word-break:break-word;">
+              {% if rec.doi %}<span title="{{ rec.doi }}">{{ rec.doi }}</span>{% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+  </div>
+</section>
+{% endif %}
 
 <!-- Skupiny záznamov – HTMX sem swapuje nový obsah pri zmene zoradenia -->
 <div id="groups-container">

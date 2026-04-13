@@ -1,3 +1,10 @@
+/* ── Širší scrollbar ── */
+::-webkit-scrollbar { width: 10px; height: 10px; }
+::-webkit-scrollbar-track { background: #f1f1f1; border-radius: 5px; }
+::-webkit-scrollbar-thumb { background: #c1c1c1; border-radius: 5px; border: 2px solid #f1f1f1; }
+::-webkit-scrollbar-thumb:hover { background: #999; }
+* { scrollbar-width: thin; scrollbar-color: #c1c1c1 #f1f1f1; }
+
 /* ── UTB brandové farby ── */
 :root {
   --utb-orange: #F37222;
@@ -16,11 +23,32 @@
 
 /* ── Skupiny záznamov ── */
 .group-heading {
-  font-size: 0.95rem;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  background: linear-gradient(90deg, #fef0e6 0%, #fffaf7 60%, #fff 100%);
+  border-left: 5px solid var(--utb-orange);
+  border-top: 1px solid #f0c8a8;
+  border-bottom: 1px solid #f0c8a8;
+  border-radius: 0 8px 8px 0;
+  padding: 0.6rem 1rem 0.6rem 0.9rem;
+  margin-bottom: 0.85rem;
+  font-size: 0.97rem;
   font-weight: 600;
-  border-left: 4px solid var(--utb-orange);
-  padding-left: 0.75rem;
-  margin-bottom: 0.5rem;
+  color: #2a2a2a;
+  box-shadow: 0 2px 6px rgba(243, 114, 34, 0.10);
+}
+.group-heading-badge {
+  flex-shrink: 0;
+  font-size: 0.78rem;
+  font-weight: 600;
+  background: #fff;
+  border: 1px solid #f0a86a;
+  color: #b04d08;
+  border-radius: 20px;
+  padding: 0.2em 0.75em;
+  white-space: nowrap;
+  margin-left: 1rem;
 }
 
 /* ── Riadky v zozname ── */
@@ -28,6 +56,32 @@
 
 /* ── Detail stránka ── */
 /* (Hlavné štýly sú inline v detail.html pre lepšiu izoláciu) */
+
+/* ── Search suggestions ── */
+.search-suggestion-item {
+  border-bottom: 1px solid #f0f0f0;
+  transition: background 0.1s;
+}
+.search-suggestion-item:hover {
+  background: #fff8f4;
+}
+.search-suggestion-item:last-child {
+  border-bottom: none;
+}
+
+/* ── Posuvníky šírky stĺpcov (hlavná stránka) ── */
+.list-resize-handle {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 6px;
+  cursor: col-resize;
+  z-index: 1;
+}
+.list-resize-handle:hover {
+  background: rgba(13, 110, 253, 0.35);
+}
 
 /* Zdieľané diff štýly (používané aj inde) */
 .proposed-add {

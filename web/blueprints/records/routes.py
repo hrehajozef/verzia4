@@ -2,10 +2,14 @@
 
 from flask import render_template, request, redirect, url_for, abort, jsonify
 
+from src.common.constants import FACULTIES, DEPARTMENTS
 from web.blueprints.records import bp
 from web.services.records_service import (
     fetch_unchecked_records,
+    fetch_pending_records,
+    search_records,
     SORT_OPTIONS,
+    SEARCH_FIELD_CONDITIONS,
     GROUP_EXISTING,
     GROUP_DUPLICATE,
     GROUP_SINGLE,
@@ -34,6 +38,7 @@ def index():
         sort = "oldest"
 
     groups = fetch_unchecked_records(sort=sort)
+    pending = fetch_pending_records()
 
     group_list = [
         {
@@ -62,7 +67,22 @@ def index():
         sort=sort,
         sort_labels=SORT_LABELS,
         total=total,
+        pending=pending,
     )
+
+
+@bp.route("/api/search")
+def api_search():
+    q = request.args.get("q", "").strip()
+    if not q:
+        return jsonify({"results": []})
+
+    fields            = request.args.getlist("fields") or list(SEARCH_FIELD_CONDITIONS.keys())
+    include_processed = request.args.get("include_processed", "0") == "1"
+    limit             = min(int(request.args.get("limit", "10")), 200)
+
+    results = search_records(q, fields, include_processed, limit)
+    return jsonify({"results": results})
 
 
 @bp.route("/record/<resource_id>")
@@ -82,6 +102,8 @@ def record_detail(resource_id: str):
         utb_authors=authors,
         doi=doi,
         resource_id=resource_id,
+        faculties=FACULTIES,
+        departments=DEPARTMENTS,
     )
 
 

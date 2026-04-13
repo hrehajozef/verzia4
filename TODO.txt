@@ -1,0 +1,25 @@
+HOME PAGE:
+Záznamy s uloženými zmenami čakajúce na scvhálenie budú zobrazené na domovskej stránke v samostatnej secii "Zmeny čakajúce na schválení".
+
+DETAIL PAGE:
+tlačidlo "Stĺpce" nefunguje
+pridávanie fakúlt a ústavov nefunguje
+
+prepísať tlečidlo "uložiť zmeny" na "uložiť zmeny do zázobníka (na schválenie)" na schválenie bude napísané menším písmenom v druhom riadku
+prepísať tlačidlo "schváliť" na "schváliť a uložiť do databázy"
+tieto dve tlačidlá zobraziť aj na konci stránky, aby nemuseli užívatelia scrollovat nahor
+
+PIPELINE:
+Do hornej lišty k položke "Zoznam" pridať položku "Pipeline"
+Vytvoriť novú stránku "Pipeline", kde sa budú spúšťať jednotlivé kroky pipeliny (všetko čo je v src/cli/__main__.py) v grafickom prostredí.
+Všetky možné príkazy budú mať ich voliteľné atribúty ako zaklikávacie polia. (Napr. príkaz bootstrap vedľa seba bude mať option --drop aj s vysvetlivkou)
+Všetky príkazy budú mať vysvetlivky, že čo vlastne robia.
+Celý proces pipeliny bude detailne popísaný.
+Príkazy budú zobrazené takto:
+Sekcia s názvom logického oddielu - napr. "Autori"
+Každá sekcia bude mať v sebe v riadkoch jednotlivé príkazy ktoré do nej spadajú. Príkazy budú vyzerať takto:
+zaklikávacie pole, názov funkcie (ikonka otáznika, po prejdení naň sa zobrazí nápoveda), voliteľné atribúty funkcie pod sebou (prípadne aj s input textovými poľami pre atribúty kotré to vyžadujú) pri každom atribúte bude ikonka s nápovedou, tlačidlo "Spustiť teraz"
+záznamy sa budú dať jednotlivo ale aj hromadne označiť. Označené záznamy bude možné spustiť hneď alebo naplánovať spustenie na konkrétny čas kedy sa to automaticky spustí. To znamená že tam musí byť aj logika toho, že sa bude autoamticky kontrolovať či je naplánovné nejaké spustenie pipeliny.
+takto naplánované spustenie bude zobrazené navrchu stránky a bude môcť byť odstránené.
+
+Odstráň zo súboru src/cli/__main__.py všetky jednorázové príkazy, ktoré už nebudem potrebovať - pred vymazaním to so mnou konzultuj.

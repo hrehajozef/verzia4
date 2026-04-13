@@ -1,54 +1,76 @@
+<!-- Skrytý indikátor aktívneho zoradenia – čítaný JS-om po HTMX swap -->
+<div class="d-none" data-active-sort="{{ sort }}"></div>
+
 {% for group in group_list %}
 <section class="record-group mb-4" id="group-{{ group.key }}">
-  <h5 class="group-heading d-flex align-items-center gap-2">
-    <span class="badge bg-utb-light text-dark">{{ group.count }}</span>
-    {{ group.label }}
-  </h5>
-
-  {% if group.records %}
-  <div class="table-responsive">
-    <table class="table table-hover table-sm align-middle">
-      <thead class="table-light">
-        <tr>
-          <th>Názov</th>
-          <th>Autori</th>
-          <th>Rok</th>
-          <th>Časopis</th>
-          <th>Vol/Iss</th>
-          <th>Zdroj</th>
-        </tr>
-      </thead>
-      <tbody>
-        {% for rec in group.records %}
-        <tr class="record-row" style="cursor:pointer"
-            onclick="window.location='/record/{{ rec.resource_id }}'">
-          <td>
-            <a href="/record/{{ rec.resource_id }}" class="text-decoration-none text-dark">
-              {{ rec.title or '(bez názvu)' }}
-            </a>
-          </td>
-          <td class="text-muted small">
-            {% if rec.authors %}
-              {{ rec.authors[:2] | join('; ') }}{% if rec.authors|length > 2 %} …{% endif %}
-            {% endif %}
-          </td>
-          <td class="text-nowrap">{{ rec.year or '—' }}</td>
-          <td class="small">{{ rec.journal or '—' }}</td>
-          <td class="text-nowrap small">
-            {% if rec.volume %}{{ rec.volume }}{% if rec.issue %}/{{ rec.issue }}{% endif %}{% else %}—{% endif %}
-          </td>
-          <td>
-            {% if rec.has_wos %}<span class="badge bg-primary me-1">WoS</span>{% endif %}
-            {% if rec.has_scopus %}<span class="badge bg-info text-dark me-1">Scopus</span>{% endif %}
-            {% if rec.has_riv %}<span class="badge bg-success me-1">RIV</span>{% endif %}
-          </td>
-        </tr>
-        {% endfor %}
-      </tbody>
-    </table>
+  <div class="group-heading" style="cursor:pointer;" onclick="window.toggleRecordGroup(this)">
+    <span class="group-toggle-arrow me-2" style="font-size:0.85rem; flex-shrink:0;">▼</span>
+    <span>{{ group.label }}</span>
+    <span class="group-heading-badge">{{ group.count }} záznamov</span>
   </div>
-  {% else %}
-  <p class="text-muted small fst-italic">Žiadne záznamy v tejto kategórii.</p>
-  {% endif %}
+
+  <div class="group-body">
+    {% if group.records %}
+    <div class="table-responsive">
+      <table class="table table-hover table-sm align-middle list-table" style="table-layout:fixed; min-width:900px;">
+        <colgroup>
+          <col style="width:8%">
+          <col style="width:30%">
+          <col style="width:17%">
+          <col style="width:5%">
+          <col style="width:15%">
+          <col style="width:8%">
+          <col style="width:17%">
+        </colgroup>
+        <thead class="table-light">
+          <tr>
+            <th style="position:relative; user-select:none;">ID<div class="list-resize-handle"></div></th>
+            <th style="position:relative; user-select:none;">Názov<div class="list-resize-handle"></div></th>
+            <th style="position:relative; user-select:none;">Autori<div class="list-resize-handle"></div></th>
+            <th style="position:relative; user-select:none;">Rok<div class="list-resize-handle"></div></th>
+            <th style="position:relative; user-select:none;">Časopis<div class="list-resize-handle"></div></th>
+            <th style="position:relative; user-select:none;">Volume/Issue<div class="list-resize-handle"></div></th>
+            <th style="position:relative; user-select:none;">DOI<div class="list-resize-handle"></div></th>
+          </tr>
+        </thead>
+        <tbody>
+          {% for rec in group.records %}
+          {% set voliss_val = (rec.volume or '') + ('/' + rec.issue if rec.issue else '') if rec.volume else (rec.issue or '') %}
+          <tr class="record-row" style="cursor:pointer"
+              onclick="window.location='/record/{{ rec.resource_id }}'"
+              data-rid="{{ rec.resource_id }}"
+              data-title="{{ rec.title or '' }}"
+              data-authors="{{ rec.authors[:3] | join('; ') }}"
+              data-year="{{ rec.year or '' }}"
+              data-journal="{{ rec.journal or '' }}"
+              data-voliss="{{ voliss_val }}"
+              data-doi="{{ rec.doi or '' }}">
+            <td class="text-muted small" style="overflow:hidden; white-space:nowrap; text-overflow:ellipsis;"
+                title="{{ rec.resource_id }}">{{ rec.resource_id }}</td>
+            <td style="word-break:break-word;">
+              <a href="/record/{{ rec.resource_id }}" class="text-decoration-none text-dark">
+                {{ rec.title or '(bez názvu)' }}
+              </a>
+            </td>
+            <td class="text-muted small" style="overflow:hidden; word-break:break-word;">
+              {% if rec.authors %}
+                {{ rec.authors[:2] | join('; ') }}{% if rec.authors|length > 2 %} …{% endif %}
+              {% endif %}
+            </td>
+            <td class="text-nowrap small">{{ rec.year or '—' }}</td>
+            <td class="small" style="overflow:hidden; word-break:break-word;">{{ rec.journal or '—' }}</td>
+            <td class="text-nowrap small">{{ voliss_val or '—' }}</td>
+            <td class="small" style="overflow:hidden; word-break:break-word;">
+              {% if rec.doi %}<span title="{{ rec.doi }}">{{ rec.doi }}</span>{% else %}—{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
+        </tbody>
+      </table>
+    </div>
+    {% else %}
+    <p class="text-muted small fst-italic">Žiadne záznamy v tejto kategórii.</p>
+    {% endif %}
+  </div>
 </section>
 {% endfor %}

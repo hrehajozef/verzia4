@@ -143,6 +143,7 @@ td[data-col-type='scopus']:focus {
 
 /* ── Save button ── */
 #save-all-btn { display: none; }
+#save-all-btn-bottom { display: none; }
 
 /* ── Crossref section ── */
 .crossref-section-header td {
@@ -151,6 +152,12 @@ td[data-col-type='scopus']:focus {
   text-transform: uppercase;
 }
 .crossref-row td { font-size: 0.8rem; color: #555; }
+
+/* ── Column drag-and-drop ── */
+#detail-table thead th { cursor: grab; }
+#detail-table thead th.col-drag-over { background: #dbeafe !important; outline: 2px solid #3b82f6; }
+body.col-dragging { cursor: grabbing !important; }
+body.col-dragging * { cursor: grabbing !important; user-select: none !important; }
 </style>
 {% endblock %}
 
@@ -167,12 +174,11 @@ td[data-col-type='scopus']:focus {
 <!-- Hlavička -->
 <div class="d-flex align-items-start justify-content-between mb-3 gap-2 flex-wrap">
   <div style="min-width:0; flex:1;">
-    <h5 class="mb-0 text-truncate">
+    <h5 class="mb-1" style="line-height:1.4;">
       {{ detail.main.get('dc.title', [''])[0] if detail.main.get('dc.title') else '(bez názvu)' }}
     </h5>
-    <small class="text-muted">resource_id: <code>{{ resource_id }}</code></small>
     {% if detail.checked_at %}
-    <span class="badge bg-success ms-2">
+    <span class="badge bg-success">
       Skontrolované ({{ detail.checked_at|length }}×)
     </span>
     {% endif %}
@@ -185,52 +191,14 @@ td[data-col-type='scopus']:focus {
     <button id="save-all-btn"
             class="btn btn-sm btn-warning"
             onclick="window.saveAllChanges()">
-      Uložiť zmeny (<span id="changed-count">0</span>)
+      Uložiť do zásobníka (<span id="changed-count">0</span>)
     </button>
-
-    <!-- Stĺpce dropdown -->
-    <div class="dropdown">
-      <button class="btn btn-sm btn-outline-secondary dropdown-toggle"
-              type="button"
-              data-bs-toggle="dropdown"
-              aria-expanded="false">
-        Stĺpce
-      </button>
-      <ul class="dropdown-menu dropdown-menu-end">
-        <li>
-          <label class="dropdown-item d-flex align-items-center gap-2" style="cursor:pointer;">
-            <input type="checkbox" class="col-toggle form-check-input" data-col="repozitar" checked>
-            Repozitár
-          </label>
-        </li>
-        <li>
-          <label class="dropdown-item d-flex align-items-center gap-2" style="cursor:pointer;">
-            <input type="checkbox" class="col-toggle form-check-input" data-col="wos" checked>
-            WOS
-          </label>
-        </li>
-        <li>
-          <label class="dropdown-item d-flex align-items-center gap-2" style="cursor:pointer;">
-            <input type="checkbox" class="col-toggle form-check-input" data-col="scopus" checked>
-            Scopus
-          </label>
-        </li>
-        <li>
-          <label class="dropdown-item d-flex align-items-center gap-2" style="cursor:pointer;">
-            <input type="checkbox" class="col-toggle form-check-input" data-col="crossref" checked>
-            Crossref
-          </label>
-        </li>
-      </ul>
-    </div>
-
-    <a href="/" class="btn btn-sm btn-outline-secondary">← Späť</a>
 
     <button class="btn btn-sm btn-success"
             hx-post="/record/{{ resource_id }}/approve"
             hx-target="#approve-msg"
             hx-swap="innerHTML">
-      Schváliť ✓
+      Schváliť a uložiť ✓
     </button>
   </div>
 </div>
@@ -263,26 +231,23 @@ td[data-col-type='scopus']:focus {
            name="q">
 
     <!-- Zoznam autorov -->
-    <div id="authors-list" style="max-height:380px; overflow-y:auto; font-size:0.8rem;">
+    <div id="authors-list" style="max-height:400px; overflow-y:auto; font-size:0.8rem;" class="px-2">
       {% for author in utb_authors %}
-      <div class="d-flex justify-content-between align-items-center py-1 border-bottom"
+      <div class="author-row d-flex justify-content-between align-items-center py-1 border-bottom"
            data-name="{{ author.display_name }}">
         <div style="min-width:0;">
           <span class="fw-semibold">{{ author.primary }}</span>
           {% if author.variants|length > 1 %}
-          <br><span class="text-muted" style="font-size:0.68rem;">
-            {% for v in author.variants[1:] %}{{ v }}{% if not loop.last %} | {% endif %}{% endfor %}
-          </span>
+          <br><small class="text-muted">
+            {% for v in author.variants[1:] %}{{ v }}{% if not loop.last %} || {% endif %}{% endfor %}
+          </small>
           {% endif %}
         </div>
-        <button class="btn btn-outline-danger p-0 px-1 ms-1 flex-shrink-0"
-                style="font-size:0.7rem; line-height:1.4;"
-                hx-delete="/api/authors"
-                hx-vals='{"display_name": "{{ author.display_name }}"}'
-                hx-target="#authors-list"
-                hx-swap="innerHTML"
-                hx-confirm="Odstrániť autora?"
-                title="Odstrániť">✕</button>
+        <button class="btn p-0 px-2 text-secondary author-menu-btn flex-shrink-0 ms-1"
+                style="font-size:1rem; line-height:1.4; background:none; border:1px solid gray;"
+                type="button"
+                data-display-name="{{ author.display_name }}">⋮</button>
+
       </div>
       {% else %}
       <p class="text-muted small">Žiadni autori.</p>
@@ -308,11 +273,11 @@ td[data-col-type='scopus']:focus {
            data-doi="{{ doi or '' }}"
            data-resource-id="{{ resource_id }}">
       <colgroup>
-        <col class="col-label"     style="width:180px;">
-        <col class="col-repozitar" style="width:260px;">
-        <col class="col-wos"       style="width:200px;">
-        <col class="col-scopus"    style="width:200px;">
-        <col class="col-crossref"  style="width:180px;">
+        <col class="col-label"     style="width:20%;">
+        <col class="col-repozitar" style="width:20%;">
+        <col class="col-wos"       style="width:20%;">
+        <col class="col-scopus"    style="width:20%;">
+        <col class="col-crossref"  style="width:20%;">
       </colgroup>
       <thead class="table-light">
         <tr>
@@ -398,12 +363,28 @@ td[data-col-type='scopus']:focus {
 
 </div><!-- /detail-layout -->
 
+<!-- ── Spodné tlačidlá ── -->
+<div class="d-flex justify-content-end gap-2 mt-4 pt-3 border-top">
+  <button id="save-all-btn-bottom"
+          class="btn btn-warning"
+          onclick="window.saveAllChanges()">
+    Uložiť do zásobníka (<span id="changed-count-bottom">0</span>)
+  </button>
+  <button class="btn btn-success"
+          hx-post="/record/{{ resource_id }}/approve"
+          hx-target="#approve-msg"
+          hx-swap="innerHTML">
+    Schváliť a uložiť ✓
+  </button>
+</div>
+
 {% endblock %}
 
 {% block extra_js %}
 <script>
-  // Globálna premenná pre resource_id (použije detail.js)
-  window.RESOURCE_ID = "{{ resource_id }}";
+  window.RESOURCE_ID  = "{{ resource_id }}";
+  window.UTB_FACULTIES   = {{ faculties | tojson }};
+  window.UTB_DEPARTMENTS = {{ departments | tojson }};
 </script>
 <script src="{{ url_for('static', filename='js/detail.js') }}"></script>
 {% endblock %}

@@ -8,7 +8,7 @@ import httpx
 
 _CROSSREF_URL = "https://citation.doi.org/metadata?doi={doi}"
 _TIMEOUT = 10.0
-_HEADERS = {"User-Agent": "UTB-Metadata-Pipeline/1.0 (mailto:library@utb.cz)", "Accept": "application/json"}
+_HEADERS = {"User-Agent": "UTB-Metadata-Pipeline/1.0", "Accept": "application/json"}
 
 # Mapovanie Crossref kľúčov na labely (pre "extra" sekciu)
 CROSSREF_FIELD_LABELS: dict[str, str] = {
