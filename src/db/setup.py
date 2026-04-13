@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 from sqlalchemy import inspect, text
@@ -293,7 +294,7 @@ def setup_processing_queue(local_engine: Engine | None = None) -> None:
             -- Dátumy – LLM
             date_llm_status                TEXT         DEFAULT 'not_processed',
             date_llm_processed_at          TIMESTAMPTZ,
-            date_llm_result                TEXT,
+            date_llm_result                JSONB,
 
             -- Normalizácia journalov
             journal_norm_status            TEXT         DEFAULT 'not_processed',
@@ -330,6 +331,8 @@ def setup_processing_queue(local_engine: Engine | None = None) -> None:
         """))
 
     # Naplní queue riadkami pre všetky existujúce resource_id z hlavnej tabuľky
+    _ensure_processing_queue_column_types(local_engine, schema, queue)
+
     main_table = settings.local_table
     with local_engine.begin() as conn:
         inserted = conn.execute(text(f"""
@@ -339,6 +342,61 @@ def setup_processing_queue(local_engine: Engine | None = None) -> None:
         """)).rowcount
 
     print(f"[OK] {queue} pripravená. Nových riadkov: {inserted}")
+
+
+def _ensure_processing_queue_column_types(local_engine: Engine, schema: str, queue: str) -> None:
+    """Keep queue column types aligned with pipeline writers."""
+    inspector = inspect(local_engine)
+    existing = {col["name"] for col in inspector.get_columns(queue, schema=schema)}
+    if "date_llm_result" not in existing:
+        return
+
+    with local_engine.connect() as conn:
+        row = conn.execute(text("""
+            SELECT udt_name
+            FROM information_schema.columns
+            WHERE table_schema = :schema
+              AND table_name = :queue
+              AND column_name = 'date_llm_result'
+        """), {"schema": schema, "queue": queue}).mappings().fetchone()
+
+    if not row or row["udt_name"] == "jsonb":
+        return
+
+    legacy_col = "date_llm_result_legacy"
+    print(f"[MIGRATE] Menim {queue}.date_llm_result na JSONB...")
+
+    with local_engine.begin() as conn:
+        if legacy_col not in existing:
+            conn.execute(text(
+                f'ALTER TABLE "{schema}"."{queue}" RENAME COLUMN date_llm_result TO {legacy_col}'
+            ))
+        else:
+            conn.execute(text(f'ALTER TABLE "{schema}"."{queue}" DROP COLUMN date_llm_result'))
+        conn.execute(text(f'ALTER TABLE "{schema}"."{queue}" ADD COLUMN date_llm_result JSONB'))
+
+    with local_engine.begin() as conn:
+        rows = conn.execute(text(
+            f'SELECT resource_id, {legacy_col} FROM "{schema}"."{queue}" WHERE {legacy_col} IS NOT NULL'
+        )).fetchall()
+        for row in rows:
+            raw_value = row[1]
+            try:
+                parsed = json.loads(raw_value) if isinstance(raw_value, str) else raw_value
+            except Exception:
+                parsed = {"raw": str(raw_value)}
+            conn.execute(
+                text(
+                    f'UPDATE "{schema}"."{queue}" '
+                    'SET date_llm_result = CAST(:value AS jsonb) '
+                    'WHERE resource_id = :resource_id'
+                ),
+                {
+                    "value": json.dumps(parsed, ensure_ascii=False),
+                    "resource_id": row.resource_id,
+                },
+            )
+        conn.execute(text(f'ALTER TABLE "{schema}"."{queue}" DROP COLUMN {legacy_col}'))
 
 
 def rename_legacy_author_columns(local_engine: Engine | None = None) -> None:

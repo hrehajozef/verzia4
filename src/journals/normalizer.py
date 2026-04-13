@@ -25,7 +25,7 @@ from sqlalchemy.engine import Engine
 from src.common.constants import QUEUE_TABLE
 from src.config.settings import settings
 from src.db.engines import get_local_engine
-from src.journals.lookup import LookupResult, lookup_by_isbn, lookup_by_issn
+from src.journals.lookup import LookupResult, lookup_by_doi, lookup_by_isbn, lookup_by_issn
 
 JOURNAL_NORM_VERSION = "1.0.0"
 
@@ -179,6 +179,7 @@ def run_journal_lookup(
             SELECT m.resource_id,
                    m."dc.identifier.issn"     AS issn_arr,
                    m."dc.identifier.isbn"     AS isbn_arr,
+                   m."dc.identifier.doi"      AS doi_arr,
                    m."dc.publisher"           AS publisher,
                    m."dc.relation.ispartof"   AS ispartof,
                    m."utb.scopus.affiliation" AS scopus_aff,
@@ -253,7 +254,16 @@ def run_journal_lookup(
             isbn for r in grp for isbn in _parse_isbns(r.isbn_arr)
         ))
         api_result = None
+        for doi in list(dict.fromkeys(
+            doi for r in grp for doi in _to_list(getattr(r, "doi_arr", None))
+        )):
+            api_result = lookup_by_doi(doi)
+            if api_result:
+                break
+            time.sleep(0.1)
         for isbn in all_isbns:
+            if api_result:
+                break
             api_result = lookup_by_isbn(isbn)
             if api_result:
                 break
@@ -293,6 +303,15 @@ def run_journal_lookup(
 
 def _api_lookup_issn(issn_key: str, grp: list) -> LookupResult | None:
     """Skúsi lookup pre každé ISSN záznamu (nie len prvé) kým nenájde výsledok."""
+    all_dois = list(dict.fromkeys(
+        doi for r in grp for doi in _to_list(getattr(r, "doi_arr", None))
+    ))
+    for doi in all_dois:
+        result = lookup_by_doi(doi)
+        if result:
+            return result
+        time.sleep(0.1)
+
     all_issns = list(dict.fromkeys(
         issn for r in grp for issn in _parse_issns(r.issn_arr)
     ))

@@ -37,7 +37,7 @@ class DateLLMResult(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     received:         str = Field(default="", description="Dátum doručenia rukopisu (YYYY-MM-DD alebo '').")
-    reviewed:         str = Field(default="", description="Dátum recenzie/revised form (YYYY-MM-DD alebo '').")
+    reviewed:         str = Field(default="", description="Dátum recenzie/revised/resubmitted form (YYYY-MM-DD alebo '').")
     accepted:         str = Field(default="", description="Dátum prijatia (YYYY-MM-DD alebo '').")
     published_online: str = Field(default="", description="Dátum online publikácie (YYYY-MM-DD alebo '').")
     published:        str = Field(default="", description="Dátum tlačenej publikácie (YYYY-MM-DD alebo '').")
@@ -83,7 +83,7 @@ DATES_JSON_SCHEMA: dict[str, Any] = {
         },
         "reviewed": {
             "type": "string",
-            "description": "Dátum recenzie vo formáte YYYY-MM-DD alebo prázdny reťazec.",
+            "description": "Dátum recenzie/revised/resubmitted form vo formáte YYYY-MM-DD alebo prázdny reťazec.",
         },
         "accepted": {
             "type": "string",
@@ -110,7 +110,7 @@ DATES_SYSTEM_PROMPT = """Si expert na extrakciu dátumov z metadát vedeckých p
 ## Tvoja úloha:
 Zo surového textu metadát urči kedy bol článok:
   1. received         – doručený do redakcie (Received, Submitted, Došlo)
-  2. reviewed         – po recenzii (Received in revised form, Editorial decision)
+  2. reviewed         – po recenzii (Received in revised form, Revised, Resubmitted, Editorial decision)
   3. accepted         – prijatý na publikáciu (Accepted, Approved for publication)
   4. published_online – zverejnený online (Published online, Available online)
   5. published        – publikovaný tlačene (Published, Date of publication)

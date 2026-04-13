@@ -4,6 +4,21 @@ Tento dokument popisuje celú pipeline na úrovni funkcií: čo každá funkcia 
 
 ---
 
+## Aktualny stav (2026-04-13)
+
+- `queue-setup` je kanonicky setup po `bootstrap` a `import-authors`. Vytvara/synchronizuje `utb_processing_queue`, kde su validation, author/date heuristics, LLM, journal normalization aj librarian workflow stlpce.
+- `validate-setup`, `dates-setup` a `journals-setup` su zastarane kompatibilne prikazy; vypisu hlasku, ze treba pouzit `queue-setup`.
+- `match_author()` v `src/authors/registry.py` pred fuzzy matchingom skusa normalizovanu zhodu bez diakritiky/interpunkcie, obratene poradie mena, WoS tvary `Priezvisko J` / `Priezvisko, J` a nejednoznacne inicialy alebo priezviska oznaci ako `ambiguous_initials` / `ambiguous_surname`.
+- `run_heuristics()` v `src/authors/heuristics.py` pri zapise zachovava `author_flags['duplicates']`, aby opakovany beh autorov nezmazal deduplikacne flagy.
+- `parse_fulltext_dates()` mapuje `Revised`, `Resubmitted`, ordinal revision labely a `Prepracovano` do `utb_date_reviewed`. Dalsie reviewed datumy idu do `multiple_reviewed`, nie do `utb_date_extra`.
+- Date LLM prompt v `src/llm/tasks/dates.py` explicitne popisuje `reviewed` ako recenzny/revised/resubmitted datum.
+- `lookup_by_doi()` v `src/journals/lookup.py` skusa Crossref Works (`api.crossref.org/works/{doi}`) pred ISSN/ISBN fallbackmi. `journal_norm_api_source` pre tento pripad je `crossref_work`.
+- Detail UI v `web/services/queue_service.py` dava pre author/date polia prednost LLM navrhom pred validacnymi a heuristickymi fallbackmi.
+- `/pipeline` je webova obalka nad CLI katalogom: podporuje sekcie, vyber prikazov, argumenty, hromadne spustenie, planovanie a scheduler cez `data/pipeline_schedules.json`.
+- Overeny stav testov: `uv run python -m pytest` -> 180 passed.
+
+---
+
 ## Prehľad fáz
 
 ```
@@ -77,10 +92,6 @@ Remote PostgreSQL DB (read-only)
 - `_copy_data(remote_engine, local_engine, columns)` – kopíruje dáta po dávkach
 
 **Poznámka:** `--drop` zmaže a znovu vytvorí tabuľku. Bezpečné spustiť opakovane bez `--drop`.
-
-### `rename_legacy_author_columns(local_engine=None)`
-Jednorazová migrácia: premenuje staré názvy stĺpcov na nové `author_*` názvy.
-Spúšťa sa príkazom `migrate-columns`. Bezpečné spustiť opakovane.
 
 ---
 

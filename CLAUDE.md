@@ -2,6 +2,18 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Current Project Notes (2026-04-13)
+
+- `queue-setup` is the canonical setup command after `bootstrap` and `import-authors`. `validate-setup`, `dates-setup`, and `journals-setup` are compatibility aliases that print a message pointing to `queue-setup`.
+- Pipeline state lives in `utb_processing_queue`, including validation, author/date heuristics, LLM results, journal normalization, and librarian workflow columns.
+- The `/pipeline` UI is catalog-driven via `web/blueprints/pipeline/catalog.py`; it supports command help, per-option controls, single/bulk runs, scheduled runs, and schedule deletion.
+- Pipeline schedules are stored in `data/pipeline_schedules.json`; the scheduler thread in `web/blueprints/pipeline/routes.py` executes due command batches.
+- Author matching now handles normalized punctuation/diacritics, reversed names, WoS surname+initial formats, and refuses ambiguous initials/surname-only cases instead of letting fuzzy matching guess.
+- Date parsing maps `Revised`, `Resubmitted`, ordinal revisions, and `Prepracovano` to `utb_date_reviewed`.
+- Journal normalization tries Crossref Works by DOI before ISSN/ISBN fallback APIs. The detail Crossref UI also uses `https://api.crossref.org/works/{doi}`.
+- Detail UI proposals prefer LLM output before validation/heuristic fallbacks, and `Ctrl+S`/`Cmd+S` saves changes to the librarian queue.
+- Current verification baseline: `uv run python -m pytest` -> 180 passed.
+
 ## Commands
 
 ```bash
@@ -26,14 +38,15 @@ uv run python -m src.cli <COMMAND> [OPTIONS]
 ```bash
 uv run python -m src.cli bootstrap              # Copy remote table to local DB
 uv run python -m src.cli import-authors         # Load internal author registry from CSV into local DB
-uv run python -m src.cli validate-setup         # Add validation columns (run once)
+uv run python -m src.cli queue-setup            # Create/sync utb_processing_queue (run after import-authors)
 uv run python -m src.cli validate               # Run data quality checks + generate suggested fixes
 uv run python -m src.cli apply-fixes            # Apply suggested fixes (--preview to preview first)
-uv run python -m src.cli dates-setup            # Add date columns (run once)
 uv run python -m src.cli heuristics             # Match internal authors via WoS affiliation
 uv run python -m src.cli dates                  # Parse publication dates from fulltext field
 uv run python -m src.cli heuristics-llm         # LLM fallback for unmatched author records
 uv run python -m src.cli dates-llm              # LLM fallback for unparsed dates
+uv run python -m src.cli journals-lookup        # Normalize publisher/ispartof proposals
+uv run python -m src.cli journals-apply         # Apply approved publisher/ispartof proposals
 uv run python -m src.cli dedup-setup            # Create dedup_histoire table (run once)
 uv run python -m src.cli deduplicate            # Find, merge duplicates; history in dedup_histoire
 uv run python -m src.cli export --output results.csv
@@ -41,7 +54,7 @@ uv run python -m src.cli export --output results.csv
 
 ## Architecture
 
-The pipeline processes scholarly publication metadata from a remote PostgreSQL DB at Tomas Bata University (UTB). Data flows through phases: validate → heuristics → LLM fallback → deduplicate → export.
+The pipeline processes scholarly publication metadata from a remote PostgreSQL DB at Tomas Bata University (UTB). Data flows through phases: validate -> author/date heuristics -> LLM fallback -> journal normalization -> deduplicate -> export.
 
 ### Module Map
 
@@ -99,6 +112,7 @@ src/
 - **Path B (no WoS):** Direct fuzzy match against `dc.contributor.author` field; faculty/OU taken from remote DB per author. If an author belongs to multiple faculties and WoS provides no context, a `multiple_faculties_ambiguous` flag is written for manual resolution by the librarian.
 - Author matching uses local `utb_internal_authors` table (populated by `import-authors` from CSV). Affiliation lookup queries remote DB individually per matched author (cached per run).
 - Records with unmatched UTB authors in Path A get `needs_llm=TRUE` for LLM processing.
+- `match_author()` first tries exact/normalized/reversed-name and surname+initial matches. Ambiguous initial or surname-only candidates return non-match (`ambiguous_initials` / `ambiguous_surname`) instead of falling through to fuzzy guessing.
 
 ### MDR Format Resolver (`src/dates/parser.py`)
 
@@ -144,24 +158,25 @@ Three phases:
 
 ### Column Setup Pattern
 
-Setup commands add columns via `ALTER TABLE IF NOT EXISTS` (idempotent). Always run setup commands before their corresponding processing commands.
+`queue-setup` creates/syncs `utb_processing_queue` and is the canonical idempotent setup command for validation, author/date processing, LLM result columns, journal normalization, and librarian workflow state. Older setup commands (`validate-setup`, `dates-setup`, `journals-setup`) are retained as compatibility aliases but do not add columns themselves.
 
 ## DB Columns Added by Each Setup Command
 
-**`validate-setup`:**
+**`queue-setup`:**
 - `validation_status` TEXT DEFAULT 'not_checked'
 - `validation_flags` JSONB DEFAULT '{}'
 - `validation_suggested_fixes` JSONB DEFAULT '{}'
 - `validation_version` TEXT
 - `validation_checked_at` TIMESTAMPTZ
-
-**`dates-setup`:**
+- author columns: `author_heuristic_status`, `author_internal_names`, `author_faculty`, `author_ou`, `author_flags`, `author_llm_result`, `author_llm_status`
 - `utb_date_received`, `utb_date_reviewed`, `utb_date_accepted`, `utb_date_published_online`, `utb_date_published` – DATE
 - `utb_date_extra` – JSONB
 - `date_heuristic_status` TEXT DEFAULT 'not_processed'
 - `date_needs_llm` BOOLEAN DEFAULT FALSE
 - `date_flags` JSONB DEFAULT '{}'
 - `date_heuristic_version`, `date_processed_at`, `date_llm_status`, `date_llm_processed_at`, `date_llm_result`
+- journal columns: `journal_norm_status`, `journal_norm_proposed_publisher`, `journal_norm_proposed_ispartof`, `journal_norm_api_source`, `journal_norm_issn_key`, `journal_norm_version`, `journal_norm_processed_at`
+- librarian workflow columns: `librarian_checked_at`, `created_at`, `updated_at`
 
 **`dedup-setup`:** Creates `dedup_histoire` table (same structure as source + dedup metadata columns).
 
@@ -191,5 +206,6 @@ FUZZY_DEDUP_THRESHOLD=0.85
 
 ## Pending TODOs
 
-- `_PAGINATION_COLS` in `dedup.py` – confirm exact DB column names for volume/issue/spage/epage
-- Frontend color diff for `validation_suggested_fixes` (red = original, green = suggested)
+- Decide whether runtime schedule state (`data/pipeline_schedules.json`) should be ignored or excluded from commits.
+- After real-data runs, review author cases flagged as ambiguous initials/surname-only and compare with `heuristics-compare`.
+- Before DB migration in an older environment, verify `date_llm_result` has been migrated from legacy TEXT to JSONB by `queue-setup`.

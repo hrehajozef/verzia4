@@ -1,5 +1,16 @@
 # UTB Metadata Pipeline
 
+## Aktualny stav projektu (2026-04-13)
+
+- Centralna pracovna tabulka je `utb_processing_queue`. Spustaj `queue-setup` po `bootstrap` a `import-authors`; prikazy `validate-setup`, `dates-setup` a `journals-setup` su uz len spatne kompatibilne aliasy, ktore upozornia na `queue-setup`.
+- Webova stranka `/pipeline` pouziva katalog prikazov v `web/blueprints/pipeline/catalog.py`: logicke sekcie, checkboxy pre jednotlive prikazy, vysvetlivky, volitelne flagy, textove/select vstupy, hromadne spustanie a planovanie.
+- Planovane spustenia pipeline sa ukladaju do `data/pipeline_schedules.json`; backend ich kontroluje v background scheduler threade a po dobehnuti oznaci ako `done` alebo `error`.
+- Detail zaznamu pouziva prioritu navrhov: najprv LLM vysledky (`author_llm_result`, `date_llm_result`), potom validacne/heuristicke navrhy. Ulozenie do zasobnika podporuje `Ctrl+S` na Linuxe/Windows a `Cmd+S` na macOS.
+- Detekcia internych UTB autorov rozpoznava aj mena bez diakritiky, obratene poradie mena, WoS tvary typu `Priezvisko J` / `Priezvisko, J` a nejednoznacne inicialy radsej nehada cez fuzzy match.
+- Datumy `Revised`, `Resubmitted`, `1st/2nd/3rd Revision` a `Prepracovano` patria do `utb_date_reviewed`.
+- Crossref integracia pouziva pre DOI primarne `https://api.crossref.org/works/{doi}`. Pre normalizaciu publisher/ispartof sa skusa DOI-level Crossref Works vysledok pred ISSN fallbackmi.
+- Overeny stav testov: `uv run python -m pytest` -> 180 passed.
+
 Pipeline na spracovanie a čistenie metadát publikácií Tomášovej Baťovej Univerzity (UTB). Identifikuje interných autorov, parsuje dátumy, normalizuje názvy žurnálov a vydavateľov, validuje a opravuje záznamy, deduplikuje výstup. Voliteľne využíva LLM na doriešenie nejednoznačných prípadov.
 
 ## Čo projekt robí
@@ -8,17 +19,17 @@ Pipeline na spracovanie a čistenie metadát publikácií Tomášovej Baťovej U
 |-------------|-----------------------|-----------------------------------------------------------------|
 | Init        | `bootstrap`           | Skopíruje remote tabuľku do lokálnej DB                         |
 | Init        | `import-authors`      | Nahrajú interných UTB autorov z CSV do `utb_internal_authors`   |
-| Init        | `migrate-columns`     | Jednorazová migrácia starých názvov stĺpcov na `author_*`       |
-| Validácia   | `validate-setup`      | Pridá validačné stĺpce *(raz pred prvou validáciou)*            |
+| Init        | `queue-setup`         | Vytvorí `utb_processing_queue` pre web aj pipeline výsledky      |
+| Validácia   | `validate-setup`      | Zastaraný alias; použi `queue-setup`                            |
 | Validácia   | `validate`            | Kontroluje kvalitu metadát + generuje navrhnuté opravy          |
 | Validácia   | `apply-fixes`         | Aplikuje navrhnuté opravy do skutočných stĺpcov                 |
-| Dátumy      | `dates-setup`         | Pridá dátumové stĺpce *(raz)*                                   |
+| Dátumy      | `dates-setup`         | Zastaraný alias; použi `queue-setup`                            |
 | Autori      | `heuristics`          | Heuristicky nájde interných autorov z WoS/DC afiliácií          |
 | Dátumy      | `dates`               | Heuristicky parsuje dátumy z `utb_fulltext_dates`               |
 | LLM         | `heuristics-llm`      | LLM spracovanie autorov (`author_needs_llm=TRUE`)               |
 | LLM         | `dates-llm`           | LLM spracovanie dátumov (`date_needs_llm=TRUE`)                 |
-| Žurnály     | `journals-setup`      | Pridá stĺpce normalizácie žurnálov *(raz)*                      |
-| Žurnály     | `journals-lookup`     | Lookupuje Crossref/OpenAlex/Google Books/OpenLibrary            |
+| Žurnály     | `journals-setup`      | Zastaraný alias; použi `queue-setup`                            |
+| Žurnály     | `journals-lookup`     | Lookupuje Crossref Works/Crossref Journals/OpenAlex/ISBN zdroje |
 | Žurnály     | `journals-apply`      | Zobrazí diff + aplikuje po schválení knihovníkom                |
 | Dedup       | `dedup-setup`         | Vytvorí históriu deduplikácie *(raz)*                           |
 | Dedup       | `deduplicate`         | Nájde, fyzicky zlúči a označí duplikáty                         |
@@ -29,6 +40,20 @@ Pipeline na spracovanie a čistenie metadát publikácií Tomášovej Baťovej U
 | Štatistiky  | `validate-status`     | Štatistiky validácie                                            |
 | Štatistiky  | `journals-status`     | Štatistiky normalizácie žurnálov                                |
 | Štatistiky  | `dedup-status`        | Štatistiky deduplikácie                                         |
+
+## Webové rozhranie
+
+Aplikácia má webové UI pre manuálnu kontrolu záznamov a spúšťanie pipeline príkazov:
+
+```bash
+uv run flask --app web run --debug
+```
+
+- **`/`** – Zoznam záznamov na kontrolu (zoradenie, vyhľadávanie, sekcia čakajúcich zmien)
+- **`/record/<id>`** – Detail záznamu: diff Repozitár/WoS/Scopus/Crossref, editácia polí, schvaľovanie
+- **`/pipeline`** – Spúšťanie CLI príkazov s live streaming výstupom
+
+Detailný popis UI: viz [UI.md](UI.md)
 
 ## Požiadavky
 
@@ -122,12 +147,17 @@ uv run python -m src.cli import-authors --csv data/utb_internal_authors.csv
 
 Formát CSV: `priezvisko;krstné_meno` s hlavičkou, 1 riadok = 1 osoba.
 
+### 2b. Queue setup – pracovná tabuľka pipeline a webu
+
+```bash
+uv run python -m src.cli queue-setup
+```
+
+`queue-setup` vytvorí alebo zosúladí `utb_processing_queue`. V tejto tabuľke sú uložené validačné výsledky, návrhy autorov a dátumov, LLM výsledky, journal normalizácia aj stav knihovníckeho workflow. Staršie príkazy `validate-setup`, `dates-setup` a `journals-setup` sú ponechané len kvôli spätnej kompatibilite.
+
 ### 3. Validácia metadát
 
 ```bash
-# Jednorazová príprava stĺpcov (spusti raz)
-uv run python -m src.cli validate-setup
-
 # Spustenie validácie (+ návrhy opráv)
 uv run python -m src.cli validate
 uv run python -m src.cli validate --limit 100     # len prvých 100
@@ -158,11 +188,9 @@ uv run python -m src.cli validate-status
 - WoS identifikátor (musí začínať `000`)
 - OBDID existencia v remote `veda.obd_publikace`
 
-### 4. Príprava dátumových stĺpcov (jednorazovo)
+### 4. Dátumové stĺpce
 
-```bash
-uv run python -m src.cli dates-setup
-```
+Dátumové stĺpce pripravuje `queue-setup`. Príkaz `dates-setup` zostáva v CLI iba ako zastaraný alias a vypíše upozornenie.
 
 ### 5. Heuristiky – autori
 
@@ -199,6 +227,8 @@ Parsuje `utb_fulltext_dates` s MDR resolverom:
 - Chronologické obmedzenie → MEDIUM (+ flag pre knižníka)
 - Obe interpretácie platné → LOW (→ LLM fallback)
 
+`Reviewed`, `Revised`, `Resubmitted` a revizne labely (`1st Revision`, `Prepracovano`) sa ukladaju do `utb_date_reviewed`.
+
 ```bash
 uv run python -m src.cli dates-status
 ```
@@ -223,9 +253,6 @@ uv run python -m src.cli dates-llm --reprocess      # re-spracuj chyby
 ### 9. Normalizácia žurnálov
 
 ```bash
-# Jednorazová príprava stĺpcov (spusti raz)
-uv run python -m src.cli journals-setup
-
 # Lookup kanonických hodnôt cez API
 uv run python -m src.cli journals-lookup
 uv run python -m src.cli journals-lookup --limit 50   # len prvých 50 skupín
@@ -246,7 +273,7 @@ uv run python -m src.cli journals-status
 ```
 
 Zdroje pravdy (podľa priority):
-1. **API** – Crossref (ISSN) → OpenAlex (ISSN fallback) · Google Books (ISBN) → OpenLibrary (ISBN fallback)
+1. **API** – Crossref Works podľa DOI → Crossref Journals podľa ISSN → OpenAlex (ISSN fallback) · Google Books (ISBN) → OpenLibrary (ISBN fallback)
 2. **Existujúce záznamy** – Scopus afiliácia → WoS afiliácia → najpočetnejšia hodnota
 
 Normalizujú sa len záznamy, ktorých hodnota sa líši od kanonickej.
@@ -280,16 +307,6 @@ Typy duplikátov:
 uv run python -m src.cli export --output data/vysledky_export.csv
 ```
 
-## Migrácia existujúcej DB (jednorazovo)
-
-Ak máš existujúcu DB so starými názvami stĺpcov (pred refactoringom), spusti:
-
-```bash
-uv run python -m src.cli migrate-columns
-```
-
-Premenuje: `flags→author_flags`, `heuristic_status→author_heuristic_status`, `needs_llm→author_needs_llm`, `llm_status→author_llm_status`, `utb_contributor_internalauthor→author_internal_names`, `utb_faculty→author_faculty` atď.
-
 ## Testy
 
 ```bash
@@ -311,4 +328,4 @@ uv run python -m pytest tests/test_dates_parser.py -v
 | `apply-fixes` nič nerobí                             | Spusti najprv `validate`; skontroluj `validate-status`                        |
 | `journals-lookup` nenájde nič                        | API je dostupné len online; over sieťové pripojenie                           |
 | `journals-apply` bez `--preview` nič nezapíše        | Najprv spusti `journals-lookup`; skontroluj `journals-status`                 |
-| Stĺpce `author_*` neexistujú                         | Spusti `migrate-columns` (jednorazová migrácia starého DB schéma)             |
+| Stĺpce `author_*` neexistujú                         | Spusti `queue-setup` pre nastavenie všetkých potrebných stĺpcov               |

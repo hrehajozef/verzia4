@@ -60,8 +60,19 @@ class TestMatchLabel:
     def test_reviewed(self):
         assert match_label("Received in revised form") == DateCategory.REVIEWED
 
-    def test_extra_revised(self):
-        assert match_label("Revised") == DateCategory.EXTRA
+    def test_revised_is_reviewed(self):
+        assert match_label("Revised") == DateCategory.REVIEWED
+
+    def test_resubmitted_is_reviewed(self):
+        assert match_label("Resubmitted") == DateCategory.REVIEWED
+
+    def test_prepracovano_is_reviewed(self):
+        assert match_label("Prepracováno") == DateCategory.REVIEWED
+
+    def test_revision_is_reviewed(self):
+        result = parse_fulltext_dates(resource_id=12, raw_text="1st Revision: 10 March 2020")
+        assert result.reviewed == date(2020, 3, 10)
+        assert result.flags.get("extra_dates") is None
 
     def test_czech_received(self):
         assert match_label("Do redakce došlo") == DateCategory.RECEIVED

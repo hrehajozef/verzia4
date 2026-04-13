@@ -1,97 +1,239 @@
 {% extends "base.html" %}
 
-{# ── Macro pre kartu príkazu ── #}
-{% macro cmd_card(command, desc, badge=None) %}
-<div class="cmd-card" data-cmd="{{ command }}">
-  <div class="cmd-card-header">
-    <span class="cmd-arrow">▼</span>
-    <span class="cmd-name">{{ command }}</span>
-    <span class="cmd-desc">{{ desc }}</span>
-    {% if badge %}<span class="cmd-badge">{{ badge }}</span>{% endif %}
-    <button class="btn btn-sm btn-utb py-0 px-2 ms-auto flex-shrink-0"
-            style="font-size:0.75rem;"
-            data-run-btn="{{ command }}">
-      Spustiť
-    </button>
-  </div>
-  {% if caller %}
-  <div class="cmd-body">
-    {{ caller() }}
-  </div>
-  {% endif %}
-</div>
-{% endmacro %}
+{% block title %}Pipeline - UTB Metadata Review{% endblock %}
 
-{% block title %}Pipeline – UTB Metadata Review{% endblock %}
+{% macro help_icon(text) -%}
+  <span class="pipeline-help" tabindex="0" title="{{ text }}">?</span>
+{%- endmacro %}
+
+{% macro option_field(command, option) %}
+  <div class="pipeline-option">
+    {% if option.type == "bool" %}
+      <label class="pipeline-check">
+        <input type="checkbox"
+               class="form-check-input cmd-option-field"
+               name="{{ option.name }}"
+               data-option-type="{{ option.type }}">
+        <span>{{ option.label }}</span>
+        {{ help_icon(option.help) }}
+      </label>
+    {% elif option.type == "select" %}
+      <label class="pipeline-option-label">
+        <span>{{ option.label }}</span>
+        {{ help_icon(option.help) }}
+      </label>
+      <select class="form-select form-select-sm cmd-option-field"
+              name="{{ option.name }}"
+              data-option-type="{{ option.type }}">
+        {% for value, label in option.choices %}
+          <option value="{{ value }}" {% if value == option.default %}selected{% endif %}>{{ label }}</option>
+        {% endfor %}
+      </select>
+    {% else %}
+      <label class="pipeline-option-label">
+        <span>{{ option.label }}</span>
+        {{ help_icon(option.help) }}
+      </label>
+      <input class="form-control form-control-sm cmd-option-field"
+             type="{{ 'number' if option.type in ['int', 'float'] else 'text' }}"
+             name="{{ option.name }}"
+             data-option-type="{{ option.type }}"
+             value="{{ option.default if option.default is defined else '' }}"
+             {% if option.type == "float" %}step="0.01" min="0"{% endif %}
+             {% if option.type == "int" %}step="1" min="0"{% endif %}>
+    {% endif %}
+  </div>
+{% endmacro %}
 
 {% block extra_css %}
 <style>
-.pipeline-section { margin-bottom: 2rem; }
-.pipeline-section-title {
-  font-size: 0.7rem;
+.pipeline-page {
+  --pipe-border: #d8dde6;
+  --pipe-soft: #f6f8fb;
+  --pipe-accent: #0f766e;
+}
+.pipeline-topbar {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 1rem;
+  flex-wrap: wrap;
+}
+.pipeline-copy {
+  max-width: 980px;
+  color: #4b5563;
+  font-size: 0.92rem;
+}
+.scheduled-panel,
+.pipeline-process,
+.pipeline-section,
+.pipeline-runner {
+  border: 1px solid var(--pipe-border);
+  border-radius: 8px;
+  background: #fff;
+}
+.scheduled-panel,
+.pipeline-process {
+  padding: 1rem;
+}
+.schedule-list {
+  display: grid;
+  gap: 0.55rem;
+}
+.schedule-item {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 0.75rem;
+  align-items: center;
+  border: 1px solid #e5e7eb;
+  border-radius: 8px;
+  padding: 0.65rem 0.75rem;
+  background: #fbfcfe;
+}
+.schedule-status {
+  display: inline-block;
+  border-radius: 999px;
+  border: 1px solid #cbd5e1;
+  padding: 0.1rem 0.45rem;
+  font-size: 0.72rem;
+  color: #334155;
+  background: #fff;
+}
+.schedule-status.running { color: #075985; border-color: #7dd3fc; }
+.schedule-status.done { color: #166534; border-color: #86efac; }
+.schedule-status.error { color: #991b1b; border-color: #fecaca; }
+.pipeline-steps {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+  gap: 0.75rem;
+}
+.pipeline-step {
+  border-left: 4px solid var(--pipe-accent);
+  background: var(--pipe-soft);
+  border-radius: 0 8px 8px 0;
+  padding: 0.75rem 0.85rem;
+}
+.pipeline-step-title {
   font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.08em;
-  color: #888;
-  border-bottom: 1px solid #e0e0e0;
-  padding-bottom: 4px;
-  margin-bottom: 0.75rem;
+  font-size: 0.9rem;
+  margin-bottom: 0.35rem;
 }
-.cmd-card {
-  border: 1px solid #dee2e6;
-  border-radius: 6px;
-  margin-bottom: 0.6rem;
-  background: #fafafa;
+.pipeline-step-body {
+  color: #4b5563;
+  font-size: 0.82rem;
 }
-.cmd-card-header {
+.bulk-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+  background: #f8fafc;
+  border: 1px solid #e2e8f0;
+  border-radius: 8px;
+  padding: 0.7rem;
+  position: sticky;
+  top: 0;
+  z-index: 5;
+}
+.pipeline-section {
+  margin-bottom: 1rem;
+  overflow: hidden;
+}
+.pipeline-section-header {
   display: flex;
   align-items: center;
-  gap: 0.5rem;
-  padding: 0.5rem 0.75rem;
-  cursor: pointer;
-  user-select: none;
+  gap: 0.65rem;
+  padding: 0.75rem 0.9rem;
+  background: #f8fafc;
+  border-bottom: 1px solid var(--pipe-border);
 }
-.cmd-card-header:hover { background: #f0f4ff; border-radius: 6px; }
+.pipeline-section-title {
+  font-size: 0.95rem;
+  font-weight: 700;
+  margin: 0;
+}
+.command-row {
+  display: grid;
+  grid-template-columns: minmax(210px, 0.9fr) minmax(250px, 1.45fr) auto;
+  gap: 0.85rem;
+  align-items: start;
+  padding: 0.85rem 0.9rem;
+  border-bottom: 1px solid #edf0f4;
+}
+.command-row:last-child {
+  border-bottom: 0;
+}
+.command-main {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.6rem;
+}
 .cmd-name {
   font-family: monospace;
   font-weight: 700;
-  font-size: 0.9rem;
   color: #0d47a1;
 }
 .cmd-desc {
-  font-size: 0.8rem;
-  color: #555;
-  flex: 1;
+  margin-top: 0.2rem;
+  font-size: 0.82rem;
+  color: #4b5563;
 }
 .cmd-badge {
-  font-size: 0.65rem;
-  background: #e3f2fd;
-  color: #0d47a1;
-  border: 1px solid #90caf9;
-  border-radius: 3px;
-  padding: 1px 5px;
+  display: inline-block;
+  font-size: 0.68rem;
+  color: #7c2d12;
+  border: 1px solid #fed7aa;
+  background: #fff7ed;
+  border-radius: 8px;
+  padding: 0.05rem 0.4rem;
+  margin-left: 0.35rem;
 }
-.cmd-body {
-  padding: 0.5rem 0.75rem 0.75rem;
-  border-top: 1px solid #eee;
+.pipeline-options {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 0.55rem;
 }
-.cmd-options { display: flex; flex-wrap: wrap; gap: 0.5rem 1rem; margin-bottom: 0.5rem; }
-.cmd-option label { font-size: 0.8rem; color: #444; display: block; }
-.cmd-option input[type=text],
-.cmd-option input[type=number],
-.cmd-option select { font-size: 0.8rem; }
-.cmd-option.d-flex label { display: inline; }
-
-/* ── Output panel ── */
-#pipeline-output-wrap {
+.pipeline-option-label {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  font-size: 0.76rem;
+  color: #475569;
+  margin-bottom: 0.2rem;
+}
+.pipeline-check {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+  min-height: 31px;
+  font-size: 0.8rem;
+  color: #334155;
+}
+.pipeline-help {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  border: 1px solid #94a3b8;
+  color: #475569;
+  font-size: 0.68rem;
+  font-weight: 700;
+  cursor: help;
+}
+.pipeline-runner {
   position: sticky;
   top: 56px;
+  padding: 0.85rem;
+}
+#pipeline-output-wrap {
   background: #1e1e1e;
   color: #d4d4d4;
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 0.75rem 1rem;
-  min-height: 200px;
-  max-height: 60vh;
+  min-height: 260px;
+  max-height: 62vh;
   overflow-y: auto;
   font-family: monospace;
   font-size: 0.8rem;
@@ -99,247 +241,122 @@
   white-space: pre-wrap;
   word-break: break-word;
 }
-#pipeline-output-wrap .out-ok    { color: #4ec9b0; }
-#pipeline-output-wrap .out-err   { color: #f44747; }
+#pipeline-output-wrap .out-ok { color: #4ec9b0; }
+#pipeline-output-wrap .out-err { color: #f44747; }
 #pipeline-output-wrap .out-start { color: #ce9178; }
-#pipeline-status { font-size: 0.75rem; margin-top: 4px; }
+@media (max-width: 991.98px) {
+  .command-row {
+    grid-template-columns: 1fr;
+  }
+  .pipeline-runner {
+    position: static;
+  }
+}
 </style>
 {% endblock %}
 
 {% block content %}
-<div class="d-flex align-items-center mb-3 gap-3">
-  <h4 class="mb-0">Pipeline</h4>
-  <span class="text-muted small">Spúšťanie príkazov spracovania metadát</span>
-</div>
-
-<div class="row g-3">
-
-  <!-- ── Ľavý stĺpec: príkazy ── -->
-  <div class="col-lg-7">
-
-    <!-- Bootstrap & Setup -->
-    <div class="pipeline-section">
-      <div class="pipeline-section-title">Bootstrap &amp; Setup</div>
-
-      {% call cmd_card("bootstrap", "Inicializácia lokálnej DB – skopíruje remote tabuľku") %}
-        <div class="cmd-options">
-          <div class="cmd-option d-flex align-items-center gap-1">
-            <input type="checkbox" name="drop" id="opt-bootstrap-drop" class="form-check-input">
-            <label for="opt-bootstrap-drop">--drop (zmaže a znovu vytvorí)</label>
-          </div>
-        </div>
-      {% endcall %}
-
-      {% call cmd_card("import-authors", "Import interných autorov z CSV") %}{% endcall %}
-      {% call cmd_card("queue-setup", "Vytvorí tabuľku utb_processing_queue", badge="raz") %}{% endcall %}
+<div class="pipeline-page">
+  <div class="pipeline-topbar mb-3">
+    <div>
+      <h4 class="mb-1">Pipeline</h4>
+      <div class="pipeline-copy">
+        Spustanie krokov spracovania metadat publikacii z grafickeho prostredia.
+        Kazdy riadok zodpoveda prikazu z <code>src/cli/__main__.py</code>, vratane dostupnych volitelnych atributov.
+      </div>
     </div>
-
-    <!-- Validácia -->
-    <div class="pipeline-section">
-      <div class="pipeline-section-title">Validácia</div>
-
-      {% call cmd_card("validate-setup", "Pridá validation stĺpce do DB", badge="raz") %}{% endcall %}
-
-      {% call cmd_card("validate", "Validácia kvality metadát + návrhy opráv") %}
-        <div class="cmd-options">
-          <div class="cmd-option">
-            <label>--limit</label>
-            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
-          </div>
-          <div class="cmd-option">
-            <label>--batch-size</label>
-            <input type="number" name="batch_size" value="500" min="1" class="form-control form-control-sm" style="width:100px">
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="revalidate" id="opt-val-rev" class="form-check-input">
-            <label for="opt-val-rev">--revalidate</label>
-          </div>
-        </div>
-      {% endcall %}
-
-      {% call cmd_card("apply-fixes", "Aplikuje navrhnuté opravy do DB") %}
-        <div class="cmd-options">
-          <div class="cmd-option">
-            <label>--limit</label>
-            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="preview" id="opt-apfix-prev" class="form-check-input">
-            <label for="opt-apfix-prev">--preview</label>
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="dry_run" id="opt-apfix-dry" class="form-check-input">
-            <label for="opt-apfix-dry">--dry-run</label>
-          </div>
-        </div>
-      {% endcall %}
-
-      {% call cmd_card("validate-status", "Štatistiky validácie", badge="info") %}{% endcall %}
-    </div>
-
-    <!-- Heuristiky – Autori -->
-    <div class="pipeline-section">
-      <div class="pipeline-section-title">Heuristiky – Autori</div>
-
-      {% call cmd_card("heuristics", "Heuristické spracovanie mien a afiliácií autorov") %}
-        <div class="cmd-options">
-          <div class="cmd-option">
-            <label>--limit</label>
-            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="reprocess" id="opt-h-rp" class="form-check-input">
-            <label for="opt-h-rp">--reprocess</label>
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="reprocess_errors" id="opt-h-re" class="form-check-input">
-            <label for="opt-h-re">--reprocess-errors</label>
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="normalize" id="opt-h-norm" class="form-check-input">
-            <label for="opt-h-norm">--normalize</label>
-          </div>
-        </div>
-      {% endcall %}
-
-      {% call cmd_card("heuristics-llm", "LLM spracovanie autorov (needs_llm=TRUE)") %}
-        <div class="cmd-options">
-          <div class="cmd-option">
-            <label>--limit</label>
-            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
-          </div>
-          <div class="cmd-option">
-            <label>--provider</label>
-            <select name="provider" class="form-select form-select-sm" style="width:120px">
-              <option value="">(z .env)</option>
-              <option value="ollama">ollama</option>
-              <option value="openai">openai</option>
-            </select>
-          </div>
-        </div>
-      {% endcall %}
-
-      {% call cmd_card("heuristics-compare", "Porovnanie výsledkov vs. knihovník", badge="info") %}{% endcall %}
-      {% call cmd_card("heuristics-status", "Štatistiky spracovania autorov", badge="info") %}{% endcall %}
-    </div>
-
-    <!-- Heuristiky – Dátumy -->
-    <div class="pipeline-section">
-      <div class="pipeline-section-title">Heuristiky – Dátumy</div>
-
-      {% call cmd_card("dates-setup", "Pridá DATE stĺpce do DB", badge="raz") %}{% endcall %}
-
-      {% call cmd_card("dates", "Parsovanie dátumov z utb_fulltext_dates") %}
-        <div class="cmd-options">
-          <div class="cmd-option">
-            <label>--limit</label>
-            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
-          </div>
-          <div class="cmd-option">
-            <label>--batch-size</label>
-            <input type="number" name="batch_size" value="200" min="1" class="form-control form-control-sm" style="width:100px">
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="reprocess" id="opt-d-rp" class="form-check-input">
-            <label for="opt-d-rp">--reprocess</label>
-          </div>
-        </div>
-      {% endcall %}
-
-      {% call cmd_card("dates-llm", "LLM spracovanie dátumov (date_needs_llm=TRUE)") %}
-        <div class="cmd-options">
-          <div class="cmd-option">
-            <label>--limit</label>
-            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
-          </div>
-          <div class="cmd-option">
-            <label>--provider</label>
-            <select name="provider" class="form-select form-select-sm" style="width:120px">
-              <option value="">(z .env)</option>
-              <option value="ollama">ollama</option>
-              <option value="openai">openai</option>
-            </select>
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="reprocess" id="opt-dl-rp" class="form-check-input">
-            <label for="opt-dl-rp">--reprocess</label>
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="include_dash" id="opt-dl-dash" class="form-check-input">
-            <label for="opt-dl-dash">--include-dash</label>
-          </div>
-        </div>
-      {% endcall %}
-
-      {% call cmd_card("dates-status", "Štatistiky dátumov", badge="info") %}{% endcall %}
-    </div>
-
-    <!-- Normalizácia -->
-    <div class="pipeline-section">
-      <div class="pipeline-section-title">Normalizácia Publisher / Ispartof</div>
-
-      {% call cmd_card("journals-setup", "Pridá journal_norm_* stĺpce do DB", badge="raz") %}{% endcall %}
-
-      {% call cmd_card("journals-lookup", "Lookup ISSN/ISBN cez Crossref / Google Books") %}
-        <div class="cmd-options">
-          <div class="cmd-option">
-            <label>--limit</label>
-            <input type="number" name="limit" value="0" min="0" class="form-control form-control-sm" style="width:100px">
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="reprocess" id="opt-jl-rp" class="form-check-input">
-            <label for="opt-jl-rp">--reprocess</label>
-          </div>
-        </div>
-      {% endcall %}
-
-      {% call cmd_card("journals-status", "Štatistiky normalizácie", badge="info") %}{% endcall %}
-    </div>
-
-    <!-- Deduplikácia -->
-    <div class="pipeline-section">
-      <div class="pipeline-section-title">Deduplikácia</div>
-
-      {% call cmd_card("dedup-setup", "Vytvorí tabuľku dedup_histoire", badge="raz") %}{% endcall %}
-
-      {% call cmd_card("deduplicate", "Nájde a zlúči duplikáty") %}
-        <div class="cmd-options">
-          <div class="cmd-option">
-            <label>--by</label>
-            <input type="text" name="by" value="dc.identifier.doi" class="form-control form-control-sm" style="width:200px">
-          </div>
-          <div class="cmd-option">
-            <label>--threshold</label>
-            <input type="number" name="threshold" value="0" min="0" max="1" step="0.01" class="form-control form-control-sm" style="width:100px">
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="no_fuzzy" id="opt-dd-nf" class="form-check-input">
-            <label for="opt-dd-nf">--no-fuzzy</label>
-          </div>
-          <div class="cmd-option d-flex align-items-center gap-1 mt-3">
-            <input type="checkbox" name="dry_run" id="opt-dd-dry" class="form-check-input">
-            <label for="opt-dd-dry">--dry-run</label>
-          </div>
-        </div>
-      {% endcall %}
-
-      {% call cmd_card("dedup-status", "Štatistiky deduplikácie", badge="info") %}{% endcall %}
-    </div>
-
-  </div><!-- /col-lg-7 -->
-
-  <!-- ── Pravý stĺpec: výstup ── -->
-  <div class="col-lg-5">
-    <div class="fw-semibold small mb-1 text-muted">Výstup príkazu</div>
-    <div id="pipeline-output-wrap">
-      <span class="text-muted" style="font-size:0.75rem;">Zvolte príkaz a stlačte Spustiť…</span>
-    </div>
-    <div id="pipeline-status" class="text-muted mt-1"></div>
-    <button id="pipeline-stop-btn" class="btn btn-sm btn-outline-danger mt-2 d-none"
-            onclick="window.pipelineStop()">Zastaviť</button>
+    <div class="text-muted small">Planovac kontroluje ulohy kazdych 10 sekund pocas behu Flask aplikacie.</div>
   </div>
 
-</div><!-- /row -->
+  <div class="scheduled-panel mb-3">
+    <div class="d-flex justify-content-between align-items-center gap-2 mb-2">
+      <div>
+        <div class="fw-semibold">Naplanovane spustenia</div>
+        <div class="text-muted small">Oznacene prikazy mozno spustit naraz alebo naplanovat na konkretny cas.</div>
+      </div>
+      <button class="btn btn-sm btn-outline-secondary" type="button" id="refresh-schedules-btn">Obnovit</button>
+    </div>
+    <div id="scheduled-runs" class="schedule-list"></div>
+  </div>
+
+  <div class="pipeline-process mb-3">
+    <div class="fw-semibold mb-2">Proces pipeline</div>
+    <div class="pipeline-steps">
+      {% for step in pipeline_steps %}
+        <div class="pipeline-step">
+          <div class="pipeline-step-title">{{ step.title }}</div>
+          <div class="pipeline-step-body">{{ step.body }}</div>
+        </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="row g-3">
+    <div class="col-lg-7">
+      <div class="bulk-actions mb-3">
+        <label class="pipeline-check mb-0">
+          <input type="checkbox" id="select-all-commands" class="form-check-input">
+          <span>Oznacit vsetko</span>
+        </label>
+        <button type="button" class="btn btn-sm btn-utb" id="run-selected-btn">Spustit oznacene</button>
+        <div class="vr d-none d-sm-block"></div>
+        <label class="small text-muted" for="schedule-run-at">Cas spustenia</label>
+        <input type="datetime-local" id="schedule-run-at" class="form-control form-control-sm" style="max-width: 220px;">
+        <button type="button" class="btn btn-sm btn-outline-primary" id="schedule-selected-btn">Naplanovat oznacene</button>
+        <span id="selected-count" class="text-muted small ms-auto">0 oznacenych</span>
+      </div>
+
+      {% for section in pipeline_sections %}
+        <section class="pipeline-section">
+          <div class="pipeline-section-header">
+            <input type="checkbox" class="form-check-input section-select" aria-label="Oznacit sekciu {{ section.title }}">
+            <h5 class="pipeline-section-title">{{ section.title }}</h5>
+          </div>
+          {% for command in section.commands %}
+            <div class="command-row cmd-card" data-cmd="{{ command.name }}">
+              <div class="command-main">
+                <input type="checkbox" class="form-check-input cmd-select" aria-label="Oznacit {{ command.name }}">
+                <div>
+                  <div>
+                    <span class="cmd-name">{{ command.name }}</span>
+                    {{ help_icon(command.help) }}
+                    {% if command.badge %}<span class="cmd-badge">{{ command.badge }}</span>{% endif %}
+                  </div>
+                  <div class="cmd-desc">{{ command.description }}</div>
+                </div>
+              </div>
+              <div class="pipeline-options">
+                {% if command.options %}
+                  {% for option in command.options %}
+                    {{ option_field(command, option) }}
+                  {% endfor %}
+                {% else %}
+                  <span class="text-muted small">Tento prikaz nema volitelne atributy.</span>
+                {% endif %}
+              </div>
+              <div class="text-lg-end">
+                <button class="btn btn-sm btn-utb" type="button" data-run-btn="{{ command.name }}">Spustit teraz</button>
+              </div>
+            </div>
+          {% endfor %}
+        </section>
+      {% endfor %}
+    </div>
+
+    <div class="col-lg-5">
+      <div class="pipeline-runner">
+        <div class="d-flex justify-content-between align-items-center mb-2">
+          <div class="fw-semibold small text-muted">Vystup prikazu</div>
+          <button id="pipeline-stop-btn" class="btn btn-sm btn-outline-danger d-none" type="button">Zastavit</button>
+        </div>
+        <div id="pipeline-output-wrap">
+          <span class="text-muted" style="font-size:0.75rem;">Zvolte prikaz a stlacte Spustit teraz.</span>
+        </div>
+        <div id="pipeline-status" class="text-muted small mt-2"></div>
+      </div>
+    </div>
+  </div>
+</div>
 {% endblock %}
 
 {% block extra_js %}
@@ -347,36 +364,29 @@
 (function () {
   "use strict";
 
-  var runningCmd = null;
   var runningReader = null;
+  var initialSchedules = {{ schedules|tojson }};
 
-  window.pipelineStop = function () {
-    if (runningReader) {
-      runningReader.cancel();
-      runningReader = null;
-    }
-    appendOutput("[ZASTAVENÉ] Príkaz bol prerušený.");
-    setStatus("Zastavené.", "text-warning");
-    document.getElementById("pipeline-stop-btn").classList.add("d-none");
-    if (runningCmd) {
-      var btn = document.querySelector('[data-run-btn="' + runningCmd + '"]');
-      if (btn) { btn.disabled = false; btn.textContent = "Spustiť"; }
-      runningCmd = null;
-    }
-  };
+  function $(selector, root) {
+    return (root || document).querySelector(selector);
+  }
+
+  function $all(selector, root) {
+    return Array.prototype.slice.call((root || document).querySelectorAll(selector));
+  }
 
   function appendOutput(line) {
-    var wrap = document.getElementById("pipeline-output-wrap");
+    var wrap = $("#pipeline-output-wrap");
     if (!wrap) return;
-    var ph = wrap.querySelector(".text-muted");
-    if (ph && ph.textContent.includes("Zvolte")) ph.remove();
+    var placeholder = wrap.querySelector(".text-muted");
+    if (placeholder && placeholder.textContent.indexOf("Zvolte") !== -1) placeholder.remove();
 
     var span = document.createElement("span");
-    if (line.startsWith("Spúšťam:")) {
+    if (line.indexOf("Spustam:") === 0) {
       span.className = "out-start";
-    } else if (line.includes("[HOTOVO]") || line.includes("[OK]")) {
+    } else if (line.indexOf("[HOTOVO]") !== -1 || line.indexOf("[OK]") !== -1) {
       span.className = "out-ok";
-    } else if (line.includes("[CHYBA]") || line.includes("[VÝNIMKA]") || line.includes("Error")) {
+    } else if (line.indexOf("[CHYBA]") !== -1 || line.indexOf("[VYNIMKA]") !== -1 || line.indexOf("Error") !== -1) {
       span.className = "out-err";
     }
     span.textContent = line + "\n";
@@ -385,45 +395,84 @@
   }
 
   function setStatus(text, cls) {
-    var el = document.getElementById("pipeline-status");
+    var el = $("#pipeline-status");
     if (!el) return;
     el.textContent = text;
-    el.className = "small mt-1 " + (cls || "text-muted");
+    el.className = "small mt-2 " + (cls || "text-muted");
   }
 
-  function runCommand(command, bodyEl) {
+  function setRunning(isRunning) {
+    $all("[data-run-btn], #run-selected-btn, #schedule-selected-btn").forEach(function (btn) {
+      btn.disabled = isRunning;
+    });
+    $("#pipeline-stop-btn").classList.toggle("d-none", !isRunning);
+  }
+
+  function collectCommand(card) {
+    var args = {};
+    $all(".cmd-option-field", card).forEach(function (el) {
+      if (!el.name) return;
+      if (el.type === "checkbox") {
+        if (el.checked) args[el.name] = true;
+      } else if (el.value !== "") {
+        args[el.name] = el.value;
+      }
+    });
+    return {
+      command: card.dataset.cmd,
+      args: args
+    };
+  }
+
+  function selectedCommands() {
+    return $all(".cmd-card").filter(function (card) {
+      var checkbox = $(".cmd-select", card);
+      return checkbox && checkbox.checked;
+    }).map(collectCommand);
+  }
+
+  function updateSelectedCount() {
+    var count = selectedCommands().length;
+    $("#selected-count").textContent = count + (count === 1 ? " oznaceny" : " oznacenych");
+    $("#select-all-commands").checked = count > 0 && count === $all(".cmd-card").length;
+    $all(".pipeline-section").forEach(function (section) {
+      var cards = $all(".cmd-card", section);
+      var checked = cards.filter(function (card) {
+        var checkbox = $(".cmd-select", card);
+        return checkbox && checkbox.checked;
+      });
+      var sectionSelect = $(".section-select", section);
+      sectionSelect.checked = cards.length > 0 && checked.length === cards.length;
+      sectionSelect.indeterminate = checked.length > 0 && checked.length < cards.length;
+    });
+  }
+
+  function runCommands(commands) {
+    if (!commands.length) {
+      setStatus("Najprv oznacte alebo vyberte prikaz.", "text-warning");
+      return;
+    }
     if (runningReader) window.pipelineStop();
 
-    document.getElementById("pipeline-output-wrap").innerHTML = "";
-
-    var params = new URLSearchParams();
-    params.append("command", command);
-    if (bodyEl) {
-      bodyEl.querySelectorAll("input, select").forEach(function (el) {
-        if (!el.name) return;
-        if (el.type === "checkbox") {
-          if (el.checked) params.append(el.name, "on");
-        } else if (el.value !== "" && el.value !== "0" || el.name === "by") {
-          params.append(el.name, el.value);
-        }
-      });
-    }
-
-    var btn = document.querySelector('[data-run-btn="' + command + '"]');
-    if (btn) { btn.disabled = true; btn.textContent = "Beží…"; }
-    runningCmd = command;
-    document.getElementById("pipeline-stop-btn").classList.remove("d-none");
-    setStatus("Beží: " + command + "…", "text-primary");
+    $("#pipeline-output-wrap").innerHTML = "";
+    setRunning(true);
+    setStatus("Bezi: " + commands.map(function (item) { return item.command; }).join(", "), "text-primary");
 
     fetch("/pipeline/run", {
       method: "POST",
-      body: params,
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
+      body: JSON.stringify({ commands: commands }),
+      headers: { "Content-Type": "application/json" }
     }).then(function (resp) {
       var reader = resp.body.getReader();
       runningReader = reader;
       var decoder = new TextDecoder();
       var buffer = "";
+
+      function finish(ok) {
+        runningReader = null;
+        setRunning(false);
+        setStatus(ok ? "Dokoncene." : "Chyba alebo zastavene.", ok ? "text-success" : "text-danger");
+      }
 
       function read() {
         reader.read().then(function (result) {
@@ -435,66 +484,164 @@
           var parts = buffer.split("\n\n");
           buffer = parts.pop();
           parts.forEach(function (block) {
-            if (block.startsWith("event: done")) { finish(true); return; }
-            block.split("\n").forEach(function (ln) {
-              if (ln.startsWith("data: ")) appendOutput(ln.slice(6));
+            if (block.indexOf("event: done") === 0) {
+              finish(true);
+              return;
+            }
+            block.split("\n").forEach(function (line) {
+              if (line.indexOf("data: ") === 0) appendOutput(line.slice(6));
             });
           });
           read();
-        }).catch(function () { finish(false); });
+        }).catch(function () {
+          finish(false);
+        });
       }
-
-      function finish(ok) {
-        runningReader = null;
-        runningCmd    = null;
-        if (btn) { btn.disabled = false; btn.textContent = "Spustiť"; }
-        document.getElementById("pipeline-stop-btn").classList.add("d-none");
-        setStatus(ok ? "Dokončené." : "Chyba.", ok ? "text-success" : "text-danger");
-      }
-
       read();
     }).catch(function (err) {
       appendOutput("[FETCH CHYBA] " + err);
-      if (btn) { btn.disabled = false; btn.textContent = "Spustiť"; }
+      setRunning(false);
       setStatus("Chyba spojenia.", "text-danger");
-      runningCmd = null;
+    });
+  }
+
+  window.pipelineStop = function () {
+    if (runningReader) {
+      runningReader.cancel();
+      runningReader = null;
+    }
+    appendOutput("[ZASTAVENE] Prikaz bol preruseny.");
+    setRunning(false);
+    setStatus("Zastavene.", "text-warning");
+  };
+
+  function renderSchedules(schedules) {
+    var wrap = $("#scheduled-runs");
+    wrap.innerHTML = "";
+    if (!schedules.length) {
+      wrap.innerHTML = '<div class="text-muted small">Ziadne naplanovane spustenie.</div>';
+      return;
+    }
+
+    schedules.forEach(function (item) {
+      var names = (item.commands || []).map(function (cmd) { return cmd.command; }).join(", ");
+      var when = new Date(item.run_at).toLocaleString();
+      var row = document.createElement("div");
+      var info = document.createElement("div");
+      var meta = document.createElement("div");
+      var status = document.createElement("span");
+      var timeStrong = document.createElement("strong");
+      var nameLine = document.createElement("div");
+      var deleteBtn = document.createElement("button");
+
+      row.className = "schedule-item";
+      status.className = "schedule-status " + item.status;
+      status.textContent = item.status;
+      timeStrong.textContent = " " + when;
+      meta.appendChild(status);
+      meta.appendChild(timeStrong);
+
+      nameLine.className = "small text-muted";
+      nameLine.textContent = names;
+      info.appendChild(meta);
+      info.appendChild(nameLine);
+
+      deleteBtn.type = "button";
+      deleteBtn.className = "btn btn-sm btn-outline-danger";
+      deleteBtn.dataset.deleteSchedule = item.id;
+      deleteBtn.textContent = "Odstranit";
+
+      row.appendChild(info);
+      row.appendChild(deleteBtn);
+      wrap.appendChild(row);
+    });
+  }
+
+  function refreshSchedules() {
+    fetch("/pipeline/schedules").then(function (resp) {
+      return resp.json();
+    }).then(function (data) {
+      renderSchedules(data.schedules || []);
+    }).catch(function () {
+      renderSchedules(initialSchedules || []);
+    });
+  }
+
+  function scheduleSelected() {
+    var commands = selectedCommands();
+    var runAt = $("#schedule-run-at").value;
+    if (!commands.length) {
+      setStatus("Najprv oznacte prikazy na planovanie.", "text-warning");
+      return;
+    }
+    if (!runAt) {
+      setStatus("Vyberte konkretny cas spustenia.", "text-warning");
+      return;
+    }
+    fetch("/pipeline/schedules", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ run_at: runAt, commands: commands })
+    }).then(function (resp) {
+      return resp.json().then(function (data) {
+        if (!resp.ok) throw new Error(data.error || "Planovanie zlyhalo.");
+        return data;
+      });
+    }).then(function () {
+      setStatus("Spustenie bolo naplanovane.", "text-success");
+      refreshSchedules();
+    }).catch(function (err) {
+      setStatus(err.message, "text-danger");
     });
   }
 
   document.addEventListener("DOMContentLoaded", function () {
-    // Wire run buttons
-    document.querySelectorAll("[data-run-btn]").forEach(function (btn) {
-      btn.addEventListener("click", function (e) {
-        e.stopPropagation();
-        var cmd  = btn.dataset.runBtn;
+    renderSchedules(initialSchedules || []);
+
+    $all("[data-run-btn]").forEach(function (btn) {
+      btn.addEventListener("click", function () {
         var card = btn.closest(".cmd-card");
-        var body = card ? card.querySelector(".cmd-body") : null;
-        runCommand(cmd, body);
+        runCommands([collectCommand(card)]);
       });
     });
 
-    // Collapsible cards
-    document.querySelectorAll(".cmd-card-header").forEach(function (hdr) {
-      hdr.addEventListener("click", function (e) {
-        if (e.target.closest("[data-run-btn]")) return;
-        var body = hdr.nextElementSibling;
-        if (!body || !body.classList.contains("cmd-body")) return;
-        var open = body.style.display !== "none";
-        body.style.display = open ? "none" : "";
-        var arrow = hdr.querySelector(".cmd-arrow");
-        if (arrow) arrow.textContent = open ? "▶" : "▼";
+    $all(".cmd-select").forEach(function (checkbox) {
+      checkbox.addEventListener("change", updateSelectedCount);
+    });
+
+    $all(".section-select").forEach(function (checkbox) {
+      checkbox.addEventListener("change", function () {
+        var section = checkbox.closest(".pipeline-section");
+        $all(".cmd-select", section).forEach(function (cmdCheckbox) {
+          cmdCheckbox.checked = checkbox.checked;
+        });
+        updateSelectedCount();
       });
     });
 
-    // Collapse cards that have no options (body is empty / only whitespace)
-    document.querySelectorAll(".cmd-card .cmd-body").forEach(function (body) {
-      var hasInputs = body.querySelector("input, select");
-      if (!hasInputs) {
-        body.style.display = "none";
-        var arrow = body.previousElementSibling && body.previousElementSibling.querySelector(".cmd-arrow");
-        if (arrow) arrow.textContent = "▶";
-      }
+    $("#select-all-commands").addEventListener("change", function (event) {
+      $all(".cmd-select").forEach(function (checkbox) {
+        checkbox.checked = event.target.checked;
+      });
+      updateSelectedCount();
     });
+
+    $("#run-selected-btn").addEventListener("click", function () {
+      runCommands(selectedCommands());
+    });
+    $("#schedule-selected-btn").addEventListener("click", scheduleSelected);
+    $("#pipeline-stop-btn").addEventListener("click", window.pipelineStop);
+    $("#refresh-schedules-btn").addEventListener("click", refreshSchedules);
+
+    $("#scheduled-runs").addEventListener("click", function (event) {
+      var btn = event.target.closest("[data-delete-schedule]");
+      if (!btn) return;
+      fetch("/pipeline/schedules/" + btn.dataset.deleteSchedule, { method: "DELETE" })
+        .then(refreshSchedules);
+    });
+
+    updateSelectedCount();
+    window.setInterval(refreshSchedules, 10000);
   });
 })();
 </script>

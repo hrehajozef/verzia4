@@ -72,6 +72,119 @@ def _normalize_name(name: str) -> str:
     return re.sub(r"\s+", " ", no_acc.lower()).strip()
 
 
+def _match_norm(name: str) -> str:
+    """Normalizacia pre matching, kde interpunkcia nema niest vyznam."""
+    normalized = _normalize_name(name)
+    normalized = re.sub(r"[^\w\s]", " ", normalized, flags=re.UNICODE)
+    return re.sub(r"\s+", " ", normalized).strip()
+
+
+def _name_words(name: str) -> list[str]:
+    return re.findall(r"[a-z]+", _match_norm(name))
+
+
+def _author_signature(author: InternalAuthor) -> tuple[str, str]:
+    surname = _match_norm(author.surname)
+    initials = "".join(word[0] for word in _name_words(author.firstname))
+    return surname, initials
+
+
+def _candidate_signatures(name: str) -> list[tuple[str, str]]:
+    """
+    Vrati mozne (priezvisko, inicialy) interpretacie kandidata.
+
+    WoS/Scopus vedia prist ako "Priezvisko, J", "Priezvisko J" aj
+    "J Priezvisko". Pri tvare bez ciarky preto skusame obe orientacie
+    a neskor vyzadujeme jednoznacnu zhodu v registri.
+    """
+    if not name:
+        return []
+
+    signatures: list[tuple[str, str]] = []
+    if "," in name:
+        left, right = name.split(",", 1)
+        surname_words = _name_words(left)
+        given_words = _name_words(right)
+        if surname_words:
+            signatures.append((" ".join(surname_words), "".join(w[0] for w in given_words)))
+    else:
+        words = _name_words(name)
+        if words:
+            if len(words) == 1:
+                signatures.append((words[0], ""))
+            else:
+                signatures.append((words[-1], "".join(w[0] for w in words[:-1])))
+                signatures.append((words[0], "".join(w[0] for w in words[1:])))
+
+    return list(dict.fromkeys(signatures))
+
+
+def _candidate_surnames(name: str) -> set[str]:
+    return {surname for surname, _ in _candidate_signatures(name) if surname}
+
+
+def _find_unique_initial_match(
+    candidate_name: str,
+    registry: list[InternalAuthor],
+) -> InternalAuthor | None:
+    signatures = [
+        (surname, initials)
+        for surname, initials in _candidate_signatures(candidate_name)
+        if surname and initials
+    ]
+    if not signatures:
+        return None
+
+    matches: list[InternalAuthor] = []
+    for author in registry:
+        author_surname, author_initials = _author_signature(author)
+        if not author_surname or not author_initials:
+            continue
+        for candidate_surname, candidate_initials in signatures:
+            if candidate_surname != author_surname:
+                continue
+            if author_initials.startswith(candidate_initials) or candidate_initials.startswith(author_initials):
+                matches.append(author)
+                break
+
+    unique = list(dict.fromkeys(matches))
+    return unique[0] if len(unique) == 1 else None
+
+
+def _has_ambiguous_initial_match(
+    candidate_name: str,
+    registry: list[InternalAuthor],
+) -> bool:
+    signatures = [
+        (surname, initials)
+        for surname, initials in _candidate_signatures(candidate_name)
+        if surname and initials
+    ]
+    if not signatures:
+        return False
+
+    matches: list[InternalAuthor] = []
+    for author in registry:
+        author_surname, author_initials = _author_signature(author)
+        if not author_surname or not author_initials:
+            continue
+        for candidate_surname, candidate_initials in signatures:
+            if candidate_surname != author_surname:
+                continue
+            if author_initials.startswith(candidate_initials) or candidate_initials.startswith(author_initials):
+                matches.append(author)
+                break
+
+    return len(list(dict.fromkeys(matches))) > 1
+
+
+def _author_match_variants(author: InternalAuthor, *, normalize: bool) -> list[str]:
+    values = [author.full_name, author.full_name_reversed]
+    if normalize:
+        return list(dict.fromkeys(_match_norm(v) for v in values if v))
+    return list(dict.fromkeys(v for v in values if v))
+
+
 # -----------------------------------------------------------------------
 # Načítanie autorov z CSV → lokálna DB
 # -----------------------------------------------------------------------
@@ -275,9 +388,9 @@ def _extract_surname_norm(name: str) -> str:
     Formát 'M. Priezvisko' (bez čiarky) → posledné slovo.
     """
     if "," in name:
-        return _normalize_name(name.split(",")[0].strip())
+        return _match_norm(name.split(",")[0].strip())
     parts = name.strip().split()
-    return _normalize_name(parts[-1]) if parts else _normalize_name(name)
+    return _match_norm(parts[-1]) if parts else _match_norm(name)
 
 
 def match_author(
@@ -313,19 +426,49 @@ def match_author(
         if a.full_name == candidate_name or a.full_name_reversed == candidate_name:
             return MatchResult(candidate_name, True, a, 1.0, "exact_diacritic")
 
+    norm_candidate = _match_norm(candidate_name)
+    for a in registry:
+        if norm_candidate in _author_match_variants(a, normalize=True):
+            return MatchResult(candidate_name, True, a, 1.0, "exact_normalized")
+
+    initial_author = _find_unique_initial_match(candidate_name, registry)
+    if initial_author:
+        return MatchResult(candidate_name, True, initial_author, 0.98, "initial_surname")
+    if _has_ambiguous_initial_match(candidate_name, registry):
+        return MatchResult(candidate_name, False, None, 0.0, "ambiguous_initials")
+
+    candidate_surnames = _candidate_surnames(candidate_name)
+    candidate_has_initials = any(initials for _, initials in _candidate_signatures(candidate_name))
+    if candidate_surnames and not candidate_has_initials:
+        surname_matches = [
+            a for a in registry
+            if _extract_surname_norm(a.full_name) in candidate_surnames
+        ]
+        if len(surname_matches) > 1:
+            return MatchResult(candidate_name, False, None, 0.0, "ambiguous_surname")
+
     # Pre fuzzy kroky: ak require_surname_match, predfiltrovanie na zhodné priezvisko
     if require_surname_match:
-        candidate_sn = _extract_surname_norm(candidate_name)
-        fuzzy_pool   = [a for a in registry if _extract_surname_norm(a.full_name) == candidate_sn]
+        fuzzy_pool = [
+            a for a in registry
+            if _extract_surname_norm(a.full_name) in candidate_surnames
+        ]
+    elif candidate_surnames:
+        fuzzy_pool = [
+            a for a in registry
+            if _extract_surname_norm(a.full_name) in candidate_surnames
+        ] or registry
     else:
         fuzzy_pool = registry
 
+    if not fuzzy_pool:
+        return MatchResult(candidate_name, False, None, 0.0, "none")
+
     if normalize:
-        norm_candidate = _normalize_name(candidate_name)
 
         # --- Krok 2: Presná zhoda normalizovaná ---
         for a in registry:   # prechádza celý register – exact match ignoruje surname filter
-            if _normalize_name(a.full_name) == norm_candidate:
+            if norm_candidate in _author_match_variants(a, normalize=True):
                 return MatchResult(candidate_name, True, a, 1.0, "exact_normalized")
 
         # --- Krok 3: Fuzzy Jaro-Winkler na normalizovaných menách ---
@@ -333,14 +476,14 @@ def match_author(
         best_author: InternalAuthor | None = None
         seen_norms: set[str] = set()
         for author in fuzzy_pool:
-            norm_a = _normalize_name(author.full_name)
-            if norm_a in seen_norms:
-                continue
-            seen_norms.add(norm_a)
-            score = jellyfish.jaro_winkler_similarity(norm_candidate, norm_a)
-            if score > best_score:
-                best_score  = score
-                best_author = author
+            for norm_a in _author_match_variants(author, normalize=True):
+                if norm_a in seen_norms:
+                    continue
+                seen_norms.add(norm_a)
+                score = jellyfish.jaro_winkler_similarity(norm_candidate, norm_a)
+                if score > best_score:
+                    best_score  = score
+                    best_author = author
 
         if best_author and best_score >= threshold:
             return MatchResult(candidate_name, True, best_author, best_score, "fuzzy")
@@ -352,14 +495,14 @@ def match_author(
         best_author: InternalAuthor | None = None
         seen_names: set[str] = set()
         for author in fuzzy_pool:
-            raw_a = author.full_name
-            if raw_a in seen_names:
-                continue
-            seen_names.add(raw_a)
-            score = jellyfish.jaro_winkler_similarity(candidate_name, raw_a)
-            if score > best_score:
-                best_score  = score
-                best_author = author
+            for raw_a in _author_match_variants(author, normalize=False):
+                if raw_a in seen_names:
+                    continue
+                seen_names.add(raw_a)
+                score = jellyfish.jaro_winkler_similarity(candidate_name, raw_a)
+                if score > best_score:
+                    best_score  = score
+                    best_author = author
 
         if best_author and best_score >= threshold:
             return MatchResult(candidate_name, True, best_author, best_score, "fuzzy")

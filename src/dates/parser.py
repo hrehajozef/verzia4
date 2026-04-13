@@ -86,8 +86,8 @@ LABEL_MAP = {
     "published": DateCategory.PUBLISHED, "date of publication": DateCategory.PUBLISHED,
     "article publication date": DateCategory.PUBLISHED, "first published": DateCategory.PUBLISHED,
     "publication in this collection": DateCategory.PUBLISHED,
-    "revised": DateCategory.EXTRA, "resubmitted": DateCategory.EXTRA,
-    "prepracovano": DateCategory.EXTRA, "date of current version": DateCategory.EXTRA,
+    "revised": DateCategory.REVIEWED, "resubmitted": DateCategory.REVIEWED,
+    "prepracovano": DateCategory.REVIEWED, "date of current version": DateCategory.EXTRA,
     "issue publication date": DateCategory.EXTRA, "date of issue": DateCategory.EXTRA,
 }
 
@@ -579,7 +579,7 @@ def parse_fulltext_dates(resource_id, raw_text, dc_issued=None):
             else: flags.setdefault("multiple_received",[]).append({"label":label_raw,"date":parsed_date.isoformat()})
         elif category == DateCategory.REVIEWED:
             if result.reviewed is None: result.reviewed = parsed_date
-            extra_entries.append(entry)
+            else: flags.setdefault("multiple_reviewed",[]).append({"label":label_raw,"date":parsed_date.isoformat()})
         elif category == DateCategory.ACCEPTED:
             if result.accepted is None: result.accepted = parsed_date
         elif category == DateCategory.PUBLISHED_ONLINE:
@@ -619,8 +619,8 @@ def match_label(raw_label):
     """
     Rozšírená verzia match_label:
     - Pridáva podporu pre "1st Revision", "2nd Revision" atď.
-    - Tieto sa mapujú na DateCategory.EXTRA
+    - Tieto sa mapujú na DateCategory.REVIEWED
     """
     if re.search(r'\d(?:st|nd|rd|th)\s+revision', raw_label, re.IGNORECASE):
-        return DateCategory.EXTRA
+        return DateCategory.REVIEWED
     return _ORIG_MATCH_LABEL(raw_label)

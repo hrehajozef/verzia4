@@ -113,14 +113,14 @@ LABEL_MAP: dict[str, str] = {
     "first published":                             DateCategory.PUBLISHED,
     "publication in this collection":              DateCategory.PUBLISHED,
 
+    # === REVIEWED varianty (revízie patria do utb_date_reviewed) ===
+    "revised":                                     DateCategory.REVIEWED,
+    "resubmitted":                                 DateCategory.REVIEWED,
+    "1st revision":                                DateCategory.REVIEWED,
+    "2nd revision":                                DateCategory.REVIEWED,
+    "3rd revision":                                DateCategory.REVIEWED,
+    "prepracovano":                                DateCategory.REVIEWED,
     # === EXTRA (identifikovaný dátum, ale kategória menej jasná) ===
-    # Revízie idú do extra (podľa zadania – reviewed dostane len jednu)
-    "revised":                                     DateCategory.EXTRA,
-    "resubmitted":                                 DateCategory.EXTRA,
-    "1st revision":                                DateCategory.EXTRA,
-    "2nd revision":                                DateCategory.EXTRA,
-    "3rd revision":                                DateCategory.EXTRA,
-    "prepracovano":                                DateCategory.EXTRA,      # přepracováno
     # Dátum aktuálnej verzie (technický IEEE metadátum)
     "date of current version":                     DateCategory.EXTRA,
     # Dátum vydania čísla časopisu (nie článku)

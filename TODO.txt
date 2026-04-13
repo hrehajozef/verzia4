@@ -1,25 +1,25 @@
-HOME PAGE:
-Záznamy s uloženými zmenami čakajúce na scvhálenie budú zobrazené na domovskej stránke v samostatnej secii "Zmeny čakajúce na schválení".
+Aktualizovane: 2026-04-13
 
-DETAIL PAGE:
-tlačidlo "Stĺpce" nefunguje
-pridávanie fakúlt a ústavov nefunguje
+Hotove v aktualnom stave:
 
-prepísať tlečidlo "uložiť zmeny" na "uložiť zmeny do zázobníka (na schválenie)" na schválenie bude napísané menším písmenom v druhom riadku
-prepísať tlačidlo "schváliť" na "schváliť a uložiť do databázy"
-tieto dve tlačidlá zobraziť aj na konci stránky, aby nemuseli užívatelia scrollovat nahor
+- Stranka `/pipeline` spusta CLI prikazy zo `src/cli/__main__.py` v grafickom prostredi.
+- Pipeline prikazy su rozdelene do logickych sekcii.
+- Kazdy prikaz ma checkbox vyberu, nazov, napovedu, volitelne argumenty s napovedou a tlacidlo `Spustit teraz`.
+- Argumenty typu boolean su checkboxy; hodnotove argumenty su textove/select vstupy.
+- Oznacene prikazy sa daju spustit hromadne.
+- Oznacene prikazy sa daju naplanovat na konkretny cas.
+- Naplanovane behy sa zobrazuju navrchu stranky a daju sa odstranit.
+- Scheduler kontroluje naplanovane behy v background threade a zapisuje vystup do `data/pipeline_schedules.json`.
+- Detail zaznamu podporuje ulozenie do zasobnika cez `Ctrl+S` na Linuxe/Windows a `Cmd+S` na macOS.
+- Scrollbar v author paneli je odsadeny od trojbodkoveho menu autora a globalne scrollbary su sirsie.
+- UI navrhy pre autorov a datumy maju prioritu LLM vysledok -> validacia -> heuristika/queue fallback.
+- Detekcia internych autorov lepsie rozpoznava mena bez diakritiky, obratene poradie a WoS inicialove tvary.
+- `Revised`, `Resubmitted`, `1st/2nd/3rd Revision` a `Prepracovano` sa ukladaju pod `utb_date_reviewed`.
+- Publisher/ispartof lookup skusa Crossref Works podla DOI pred ISSN fallbackmi.
 
-PIPELINE:
-Do hornej lišty k položke "Zoznam" pridať položku "Pipeline"
-Vytvoriť novú stránku "Pipeline", kde sa budú spúšťať jednotlivé kroky pipeliny (všetko čo je v src/cli/__main__.py) v grafickom prostredí.
-Všetky možné príkazy budú mať ich voliteľné atribúty ako zaklikávacie polia. (Napr. príkaz bootstrap vedľa seba bude mať option --drop aj s vysvetlivkou)
-Všetky príkazy budú mať vysvetlivky, že čo vlastne robia.
-Celý proces pipeliny bude detailne popísaný.
-Príkazy budú zobrazené takto:
-Sekcia s názvom logického oddielu - napr. "Autori"
-Každá sekcia bude mať v sebe v riadkoch jednotlivé príkazy ktoré do nej spadajú. Príkazy budú vyzerať takto:
-zaklikávacie pole, názov funkcie (ikonka otáznika, po prejdení naň sa zobrazí nápoveda), voliteľné atribúty funkcie pod sebou (prípadne aj s input textovými poľami pre atribúty kotré to vyžadujú) pri každom atribúte bude ikonka s nápovedou, tlačidlo "Spustiť teraz"
-záznamy sa budú dať jednotlivo ale aj hromadne označiť. Označené záznamy bude možné spustiť hneď alebo naplánovať spustenie na konkrétny čas kedy sa to automaticky spustí. To znamená že tam musí byť aj logika toho, že sa bude autoamticky kontrolovať či je naplánovné nejaké spustenie pipeliny.
-takto naplánované spustenie bude zobrazené navrchu stránky a bude môcť byť odstránené.
+Zname rizika / dalsie mozne kontroly:
 
-Odstráň zo súboru src/cli/__main__.py všetky jednorázové príkazy, ktoré už nebudem potrebovať - pred vymazaním to so mnou konzultuj.
+- `data/pipeline_schedules.json` je runtime stav, nie zdrojovy kod; pred commitom rozhodnut, ci ma zostat ignorovany alebo sa nema commitovat.
+- `journals-apply --interactive` je CLI interaktivny rezim; vo web UI je bezpecnejsie pouzivat preview alebo neinteraktivne batch spustenie.
+- Pri realnych datach odporucam spustit porovnanie autorov `heuristics-compare` po novom matchingu a pozriet vzorku nejednoznacnych `ambiguous_initials`/`ambiguous_surname` pripadov.
+- Po nasadeni queue migracie overit, ze existujuce `date_llm_result` stlpce su JSONB a nie legacy TEXT.

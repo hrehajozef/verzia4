@@ -62,6 +62,20 @@ _PROPOSED_FROM_QUEUE: dict[str, str] = {
     "utb.ou":                         "author_ou",
 }
 
+_AUTHOR_LLM_FIELDS: dict[str, str] = {
+    "utb.contributor.internalauthor": "name",
+    "utb.faculty": "faculty",
+    "utb.ou": "ou",
+}
+
+_DATE_LLM_FIELDS: dict[str, str] = {
+    "utb_date_received": "received",
+    "utb_date_reviewed": "reviewed",
+    "utb_date_accepted": "accepted",
+    "utb_date_published_online": "published_online",
+    "utb_date_published": "published",
+}
+
 # Polia špecifické pre WoS (zobrazujú sa v WOS stĺpci)
 _WOS_COL_MAP: dict[str, str] = {
     # row_key -> wos_field_key
@@ -144,6 +158,54 @@ def _to_display(val: Any) -> str | None:
     return s if s else None
 
 
+def _json_dict(raw: Any) -> dict:
+    """Best-effort JSONB/TEXT value to dict."""
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str):
+        try:
+            parsed = json.loads(raw)
+        except Exception:
+            return {}
+        return parsed if isinstance(parsed, dict) else {}
+    return {}
+
+
+def _author_llm_proposed(queue_data: dict[str, Any], key: str) -> str | None:
+    """Explicit LLM proposal for author-related UI fields, if the LLM returned one."""
+    if queue_data.get("author_llm_status") != "processed":
+        return None
+    llm_field = _AUTHOR_LLM_FIELDS.get(key)
+    if not llm_field:
+        return None
+
+    result = _json_dict(queue_data.get("author_llm_result"))
+    entries = result.get("internal_authors")
+    if not isinstance(entries, list):
+        return None
+
+    values: list[str] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            continue
+        value = _to_display(entry.get(llm_field))
+        if value:
+            values.append(value)
+    deduped = list(dict.fromkeys(values))
+    return " || ".join(deduped) if deduped else None
+
+
+def _date_llm_proposed(queue_data: dict[str, Any], key: str) -> str | None:
+    """Explicit LLM proposal for one date field, if present."""
+    if queue_data.get("date_llm_status") != "processed":
+        return None
+    llm_field = _DATE_LLM_FIELDS.get(key)
+    if not llm_field:
+        return None
+    result = _json_dict(queue_data.get("date_llm_result"))
+    return _to_display(result.get(llm_field))
+
+
 def get_record_detail(resource_id: str, engine=None) -> dict[str, Any] | None:
     """
     Načíta kompletné dáta záznamu pre detail stránku.
@@ -177,22 +239,28 @@ def get_record_detail(resource_id: str, engine=None) -> dict[str, Any] | None:
     queue_data = dict(queue_row) if queue_row else {}
 
     # Parsovanie validation_suggested_fixes pre inline návrhy
-    vsf_raw = queue_data.get("validation_suggested_fixes") or {}
-    if isinstance(vsf_raw, str):
-        try:
-            vsf: dict = json.loads(vsf_raw)
-        except Exception:
-            vsf = {}
-    else:
-        vsf = vsf_raw if isinstance(vsf_raw, dict) else {}
+    vsf = _json_dict(queue_data.get("validation_suggested_fixes") or {})
 
     def _get_proposed(key: str) -> str | None:
         """Navrhnutá hodnota: najprv z vsf, potom queue alias, potom priamo z queue_data."""
+        # LLM ma prednost pred validacnymi a heuristickymi navrhmi.
+        v = _author_llm_proposed(queue_data, key)
+        if v is not None:
+            return v
+        v = _date_llm_proposed(queue_data, key)
+        if v is not None:
+            return v
         if key in vsf:
             fix = vsf[key]
             v = _to_display(fix.get("suggested"))
             if v is not None:
                 return v
+        v = _author_llm_proposed(queue_data, key)
+        if v is not None:
+            return v
+        v = _date_llm_proposed(queue_data, key)
+        if v is not None:
+            return v
         # Pre niektoré hlavné fieldy sa proposed berie z dedikovaného queue stĺpca
         queue_alias = _PROPOSED_FROM_QUEUE.get(key)
         if queue_alias:

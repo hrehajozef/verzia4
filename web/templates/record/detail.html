@@ -56,6 +56,24 @@
 }
 
 /* ── Table wrap ── */
+.authors-list-scroll {
+  max-height: 400px;
+  overflow-y: auto;
+  font-size: 0.8rem;
+  padding-right: 0.9rem !important;
+  scrollbar-gutter: stable;
+}
+.author-row {
+  gap: 0.5rem;
+}
+.author-row > div:first-child {
+  min-width: 0;
+  padding-right: 0.25rem;
+}
+.author-menu-btn {
+  min-width: 1.65rem;
+}
+
 .detail-table-wrap {
   flex: 1;
   overflow-x: auto;
@@ -231,11 +249,11 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
            name="q">
 
     <!-- Zoznam autorov -->
-    <div id="authors-list" style="max-height:400px; overflow-y:auto; font-size:0.8rem;" class="px-2">
+    <div id="authors-list" class="authors-list-scroll px-2">
       {% for author in utb_authors %}
       <div class="author-row d-flex justify-content-between align-items-center py-1 border-bottom"
            data-name="{{ author.display_name }}">
-        <div style="min-width:0;">
+        <div>
           <span class="fw-semibold">{{ author.primary }}</span>
           {% if author.variants|length > 1 %}
           <br><small class="text-muted">

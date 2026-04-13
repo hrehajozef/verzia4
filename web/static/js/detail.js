@@ -513,6 +513,24 @@ window.saveAllChanges = async function () {
 
 // ── Crossref – inline plnenie tabuľky ────────────────────────────────────────
 
+function initSaveShortcut() {
+  document.addEventListener("keydown", (e) => {
+    const key = (e.key || "").toLowerCase();
+    if (key !== "s" || (!e.ctrlKey && !e.metaKey)) return;
+
+    e.preventDefault();
+    const active = document.activeElement;
+    if (active && active.isContentEditable) {
+      active.blur();
+    }
+    window.setTimeout(() => {
+      if (Object.keys(changes).length) {
+        window.saveAllChanges();
+      }
+    }, 0);
+  });
+}
+
 async function loadCrossref() {
   const table   = document.getElementById("detail-table");
   const spinner = document.getElementById("crossref-spinner");
@@ -568,6 +586,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("td[data-col-type='repozitar']").forEach(renderRepozitarCell);
   initRepozitarCells();
   initSourceCells();
+  initSaveShortcut();
   updateSaveButton();
   loadCrossref();
 });

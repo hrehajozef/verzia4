@@ -371,7 +371,12 @@ def run_heuristics(
         update_sql = f"""
             UPDATE "{schema}"."{queue}"
             SET
-                author_flags                   = %s::jsonb,
+                author_flags                   = %s::jsonb ||
+                    CASE
+                        WHEN author_flags ? 'duplicates'
+                        THEN jsonb_build_object('duplicates', author_flags->'duplicates')
+                        ELSE '{{}}'::jsonb
+                    END,
                 author_heuristic_status        = %s,
                 author_heuristic_version       = %s,
                 author_heuristic_processed_at  = %s,

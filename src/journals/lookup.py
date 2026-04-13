@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import time
 from dataclasses import dataclass
+from urllib.parse import quote
 
 import httpx
 
@@ -96,6 +97,32 @@ def lookup_by_issn(issn: str) -> LookupResult | None:
         return result
     time.sleep(_RATE_DELAY)
     return _openalex_issn(issn)
+
+
+def lookup_by_doi(doi: str) -> LookupResult | None:
+    """Crossref Works lookup pre konkretne DOI; vracia publisher a container-title."""
+    clean = (doi or "").strip()
+    for prefix in ("https://doi.org/", "http://doi.org/", "https://dx.doi.org/", "doi:"):
+        if clean.lower().startswith(prefix):
+            clean = clean[len(prefix):]
+            break
+    if not clean:
+        return None
+
+    data = _get(
+        f"https://api.crossref.org/works/{quote(clean, safe='')}",
+        headers={"User-Agent": "UTBMetadataPipeline/1.0 (mailto:library@utb.cz)"},
+    )
+    if not data:
+        return None
+
+    msg = data.get("message", {})
+    pub = _clean(msg.get("publisher"))
+    titles = msg.get("container-title") or msg.get("short-container-title") or []
+    title = _clean(titles[0] if isinstance(titles, list) and titles else titles)
+    if pub or title:
+        return LookupResult(publisher=pub, title=title, source="crossref_work")
+    return None
 
 
 # ═══════════════════════════════════════════════════════════════════════

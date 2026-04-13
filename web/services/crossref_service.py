@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 from typing import Any
+from urllib.parse import quote
 
 import httpx
 
-_CROSSREF_URL = "https://citation.doi.org/metadata?doi={doi}"
+_CROSSREF_WORKS_URL = "https://api.crossref.org/works/{doi}"
+_CROSSREF_CITATION_URL = "https://citation.doi.org/metadata?doi={doi}"
 _TIMEOUT = 10.0
 _HEADERS = {"User-Agent": "UTB-Metadata-Pipeline/1.0", "Accept": "application/json"}
 
@@ -15,22 +17,31 @@ CROSSREF_FIELD_LABELS: dict[str, str] = {
     "title":                  "Názov",
     "author":                 "Autori",
     "published":              "Dátum vydania",
+    "published-print":        "Dátum vydania tlačou",
+    "published-online":       "Dátum vydania online",
+    "issued":                 "Dátum vydania",
+    "created":                "Vytvorené v Crossref",
+    "deposited":              "Aktualizované v Crossref",
     "container-title":        "Journal",
+    "short-container-title":  "Skrátený journal",
     "publisher":              "Vydavateľ",
     "volume":                 "Volume",
     "issue":                  "Issue",
     "page":                   "Strany",
     "ISSN":                   "ISSN",
+    "issn-type":              "ISSN typ",
     "ISBN":                   "ISBN",
     "DOI":                    "DOI",
     "URL":                    "URL",
     "type":                   "Typ",
     "subject":                "Predmet",
     "abstract":               "Abstrakt",
-    "reference-count":        "Počet citácií",
-    "is-referenced-by-count": "Citovaný",
+    "reference-count":        "Počet referencií",
+    "is-referenced-by-count": "Počet citovaní",
     "language":               "Jazyk",
     "license":                "Licencia",
+    "funder":                 "Financovanie",
+    "link":                   "Fulltext linky",
 }
 
 # Mapovanie: hlavný field kľúč tabuľky → Crossref kľúč
@@ -75,20 +86,74 @@ def _format_date(date_obj: dict) -> str | None:
     return "-".join(str(p).zfill(2) for p in parts if p)
 
 
+def _format_string_list(val: list) -> str | None:
+    joined = " || ".join(str(v).strip() for v in val if v and str(v).strip())
+    return joined or None
+
+
+def _format_funders(funders: list[dict]) -> str | None:
+    parts = []
+    for funder in funders:
+        name = str(funder.get("name") or "").strip()
+        awards = funder.get("award") or []
+        award_text = _format_string_list(awards) if isinstance(awards, list) else None
+        if name and award_text:
+            parts.append(f"{name} ({award_text})")
+        elif name:
+            parts.append(name)
+    return " || ".join(parts) if parts else None
+
+
+def _format_url_entries(entries: list[dict]) -> str | None:
+    urls = []
+    for entry in entries:
+        url = str(entry.get("URL") or "").strip()
+        if url:
+            urls.append(url)
+    return " || ".join(urls) if urls else None
+
+
+def _format_issn_type(entries: list[dict]) -> str | None:
+    parts = []
+    for entry in entries:
+        value = str(entry.get("value") or "").strip()
+        typ = str(entry.get("type") or "").strip()
+        if value and typ:
+            parts.append(f"{value} ({typ})")
+        elif value:
+            parts.append(value)
+    return " || ".join(parts) if parts else None
+
+
 def _format_value(key: str, val: Any) -> str | None:
     if val is None:
         return None
     if key == "author" and isinstance(val, list):
         return _format_authors(val)
-    if key in ("published", "published-print", "published-online") and isinstance(val, dict):
+    if key == "funder" and isinstance(val, list):
+        return _format_funders(val)
+    if key in ("license", "link") and isinstance(val, list):
+        return _format_url_entries(val)
+    if key == "issn-type" and isinstance(val, list):
+        return _format_issn_type(val)
+    if isinstance(val, dict) and "date-parts" in val:
         return _format_date(val)
     if isinstance(val, list):
-        joined = " || ".join(str(v) for v in val if v)
-        return joined if joined else None
+        if all(not isinstance(v, dict) for v in val):
+            return _format_string_list(val)
+        return None
     if isinstance(val, dict):
         return None  # preskočíme vnorené objekty
     s = str(val).strip()
     return s if s else None
+
+
+def _first_formatted(data: dict[str, Any], keys: tuple[str, ...]) -> str | None:
+    for key in keys:
+        val = _format_value(key, data.get(key))
+        if val:
+            return val
+    return None
 
 
 def fetch_crossref(doi: str) -> dict[str, Any]:
@@ -109,7 +174,7 @@ def fetch_crossref(doi: str) -> dict[str, Any]:
 
     try:
         resp = httpx.get(
-            _CROSSREF_URL.format(doi=doi),
+            _CROSSREF_WORKS_URL.format(doi=quote(doi, safe="")),
             headers=_HEADERS,
             timeout=_TIMEOUT,
             follow_redirects=True,
@@ -124,9 +189,27 @@ def fetch_crossref(doi: str) -> dict[str, Any]:
         return {"ok": False, "by_field": {}, "extra": [], "error": str(exc)}
 
     # 1. Inline hodnoty (namapované na riadky tabuľky)
+    if isinstance(data, dict) and isinstance(data.get("message"), dict):
+        data = data["message"]
+    else:
+        try:
+            resp = httpx.get(
+                _CROSSREF_CITATION_URL.format(doi=doi),
+                headers=_HEADERS,
+                timeout=_TIMEOUT,
+                follow_redirects=True,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception:
+            pass
+
     by_field: dict[str, str] = {}
     for main_key, cf_key in MAIN_TO_CROSSREF.items():
-        val = _format_value(cf_key, data.get(cf_key))
+        if main_key == "dc.date.issued":
+            val = _first_formatted(data, ("published-print", "published-online", "published", "issued"))
+        else:
+            val = _format_value(cf_key, data.get(cf_key))
         if val:
             by_field[main_key] = val
 
