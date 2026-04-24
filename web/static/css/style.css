@@ -53,6 +53,13 @@
 
 /* ── Riadky v zozname ── */
 .record-row:hover { background-color: #fff8f4; }
+.duplicate-child-row {
+  background: #f8fafc;
+}
+.duplicate-child-row td {
+  border-top: 0;
+  font-size: 0.9em;
+}
 
 /* ── Detail stránka ── */
 /* (Hlavné štýly sú inline v detail.html pre lepšiu izoláciu) */
@@ -89,4 +96,14 @@
   border-radius: 3px;
   padding: 1px 4px;
   display: inline-block;
+}
+
+.multi-value-list {
+  display: flex;
+  flex-direction: column;
+  gap: 0.15rem;
+}
+
+.multi-value-list > div {
+  min-width: 0;
 }

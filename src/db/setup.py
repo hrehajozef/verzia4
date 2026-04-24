@@ -14,6 +14,8 @@ from src.common.constants import OUTPUT_COLUMNS, QUEUE_TABLE
 from src.config.settings import settings
 from src.db.engines import get_local_engine, get_remote_engine
 
+CHANGE_BUFFER_TABLE = "utb_change_buffer"
+
 
 def _get_remote_columns(remote_engine: Engine) -> list[dict]:
     """
@@ -329,6 +331,24 @@ def setup_processing_queue(local_engine: Engine | None = None) -> None:
             CREATE INDEX IF NOT EXISTS idx_{queue}_date_status
             ON "{schema}"."{queue}" (date_heuristic_status)
         """))
+        conn.execute(text(f"""
+            CREATE TABLE IF NOT EXISTS "{schema}"."{CHANGE_BUFFER_TABLE}" (
+                id BIGSERIAL PRIMARY KEY,
+                resource_id BIGINT NOT NULL,
+                field_key TEXT NOT NULL,
+                target_table TEXT NOT NULL,
+                old_value TEXT,
+                new_value TEXT,
+                created_at TIMESTAMPTZ DEFAULT now(),
+                approved_at TIMESTAMPTZ,
+                discarded_at TIMESTAMPTZ
+            )
+        """))
+        conn.execute(text(f"""
+            CREATE INDEX IF NOT EXISTS idx_{CHANGE_BUFFER_TABLE}_resource_pending
+            ON "{schema}"."{CHANGE_BUFFER_TABLE}" (resource_id)
+            WHERE approved_at IS NULL AND discarded_at IS NULL
+        """))
 
     # Naplní queue riadkami pre všetky existujúce resource_id z hlavnej tabuľky
     _ensure_processing_queue_column_types(local_engine, schema, queue)
@@ -435,7 +455,7 @@ def rename_legacy_author_columns(local_engine: Engine | None = None) -> None:
                 conn.execute(text(
                     f'ALTER TABLE "{schema}"."{table}" RENAME COLUMN "{old_name}" TO "{new_name}"'
                 ))
-                print(f"  Premenovaný: {old_name} → {new_name}")
+                print(f"  Premenovaný: {old_name} -> {new_name}")
                 renamed += 1
 
     if renamed:

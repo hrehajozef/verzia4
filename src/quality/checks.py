@@ -38,7 +38,7 @@ Navrhnuté opravy → validation_suggested_fixes (JSONB)
 TODO (frontend): zobraziť original červenou, suggested zelenou pred potvrdením opravy.
 
 Aplikovanie opráv:
-  python -m src.cli apply-fixes [--preview] [--dry-run]
+  python -m src.cli apply-validation-fixes [--preview] [--dry-run]
 """
 
 from __future__ import annotations
@@ -242,7 +242,7 @@ def _compute_text_fix(value: Any) -> tuple[Any, list[str]]:
 
 
 # -----------------------------------------------------------------------
-# Opravné funkcie (verejné – pre apply-fixes a testy)
+# Opravné funkcie (verejné – pre apply-validation-fixes a testy)
 # -----------------------------------------------------------------------
 
 def fix_trailing_spaces(value: Any) -> Any:
@@ -467,8 +467,7 @@ def validate_record(
         not_found = []
         for ia in internal_authors:
             norm_ia       = _normalize_name(ia)
-            surname_pfx   = norm_ia.split(",")[0].strip()[:6] if "," in norm_ia else norm_ia[:6]
-            if surname_pfx and not any(surname_pfx in na for na in all_norms):
+            if norm_ia and norm_ia not in all_norms:
                 not_found.append(ia)
         if not_found:
             issues["internal_not_in_authors"] = not_found
@@ -552,10 +551,10 @@ def check_obdid_batch(
 def setup_validation_columns(engine: Engine | None = None) -> None:
     """
     Validation stĺpce sú teraz v utb_processing_queue.
-    Spusti 'queue-setup' namiesto tohto príkazu.
+    Spusti 'setup-processing-queue' namiesto tohto príkazu.
     """
-    print("[INFO] Validation stĺpce sú v utb_processing_queue. Spusti 'queue-setup'.")
-    print("[INFO] Príkaz validate-setup je zastaraný – môžeš ho ignorovať.")
+    print("[INFO] Validation stĺpce sú v utb_processing_queue. Spusti 'setup-processing-queue'.")
+    print("[INFO] Samostatný setup validácie bol odstránený z CLI.")
 
 
 # -----------------------------------------------------------------------
@@ -576,7 +575,11 @@ def run_validation(
     queue  = QUEUE_TABLE
 
     from src.authors.registry import get_author_registry
-    registry_names: set[str] = {a.full_name for a in get_author_registry(engine)}
+    registry_names: set[str] = {
+        name
+        for author in get_author_registry(remote_engine=remote_engine)
+        for name in author.all_names
+    }
 
     # Stĺpce z hlavnej tabuľky (obsah)
     _MAIN_COLS = [c for c in _FETCH_COLS if c not in ("author_dc_names", "author_internal_names")]
@@ -793,7 +796,7 @@ def run_apply_fixes(
     if is_dry:
         print(f"\n[DRY RUN] Žiadne zmeny. ({len(rows)} záznamov by bolo opravených)")
     else:
-        print(f"[OK] Opravených: {applied}. Spusti 'validate' pre re-validáciu.")
+        print(f"[OK] Opravených: {applied}. Spusti 'validate-metadata' pre re-validáciu.")
 
 
 # -----------------------------------------------------------------------

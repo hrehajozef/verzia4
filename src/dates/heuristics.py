@@ -4,7 +4,7 @@ Spravuje:
   1. Migráciu DB – pridanie DATE a LLM stĺpcov do lokálnej tabuľky
   2. Dávkové spracovanie záznamov (čítanie → parsovanie → zápis)
 
-DB stĺpce (vytvorí dates-setup):
+DB stĺpce (vytvorí setup-processing-queue):
   utb_date_received         DATE
   utb_date_reviewed         DATE
   utb_date_accepted         DATE
@@ -62,10 +62,10 @@ DATE_COLUMNS: list[tuple[str, str, str | None]] = [
 def setup_date_columns(engine: Engine | None = None) -> None:
     """
     DATE stĺpce sú teraz v utb_processing_queue.
-    Spusti 'queue-setup' namiesto tohto príkazu.
+    Spusti 'setup-processing-queue' namiesto tohto príkazu.
     """
-    print("[INFO] DATE stĺpce sú v utb_processing_queue. Spusti 'queue-setup'.")
-    print("[INFO] Príkaz dates-setup je zastaraný – môžeš ho ignorovať.")
+    print("[INFO] DATE stĺpce sú v utb_processing_queue. Spusti 'setup-processing-queue'.")
+    print("[INFO] Samostatný setup dátumov bol odstránený z CLI.")
 
 
 # -----------------------------------------------------------------------

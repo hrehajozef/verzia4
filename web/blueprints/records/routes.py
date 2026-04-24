@@ -17,6 +17,16 @@ from web.services.records_service import (
 from web.services.queue_service import get_record_detail, mark_checked, save_record_field, QUEUE_FIELDS
 from web.services.authors_service import get_all_authors
 
+
+def _save_fields_payload(resource_id: str, fields: dict[str, object]) -> dict[str, str]:
+    errors: dict[str, str] = {}
+    for field_key, new_value in fields.items():
+        try:
+            save_record_field(resource_id, field_key, str(new_value))
+        except Exception as exc:
+            errors[field_key] = str(exc)
+    return errors
+
 GROUP_LABELS = {
     GROUP_EXISTING:  "Záznamy zodpovedajúce existujúcemu záznamu v repozitári",
     GROUP_DUPLICATE: "Záznamy importované z WoS aj Scopus",
@@ -116,13 +126,7 @@ def save_fields(resource_id: str):
     if not fields:
         return jsonify({"ok": True})
 
-    errors: dict[str, str] = {}
-    for field_key, new_value in fields.items():
-        try:
-            save_record_field(resource_id, field_key, str(new_value))
-        except Exception as exc:
-            errors[field_key] = str(exc)
-
+    errors = _save_fields_payload(resource_id, fields)
     if errors:
         return jsonify({"ok": False, "errors": errors}), 422
     return jsonify({"ok": True})
@@ -130,7 +134,15 @@ def save_fields(resource_id: str):
 
 @bp.route("/record/<resource_id>/approve", methods=["POST"])
 def approve_record(resource_id: str):
+    data = request.get_json(silent=True) or {}
+    fields: dict[str, object] = data.get("fields", {}) if isinstance(data, dict) else {}
+    if fields:
+        errors = _save_fields_payload(resource_id, fields)
+        if errors:
+            return jsonify({"ok": False, "errors": errors}), 422
     mark_checked(resource_id)
+    if request.is_json:
+        return jsonify({"ok": True, "redirect": url_for("records.index")})
     # HTMX: po schválení presmeruje na ďalší záznam alebo zoznam
     if request.headers.get("HX-Request"):
         return (

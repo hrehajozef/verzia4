@@ -2,14 +2,19 @@
 
 from flask import Blueprint, request, render_template_string
 
-from web.services.authors_service import (
-    get_all_authors,
-    search_authors,
-    add_author,
-    remove_author,
-)
+from web.services.authors_service import get_all_authors, search_authors
 
 bp = Blueprint("authors_api", __name__)
+
+
+def add_author(display_name: str) -> None:
+    """Temporary no-op: adding to utb_authors_limited is disabled."""
+    return None
+
+
+def remove_author(display_name: str) -> None:
+    """Temporary no-op: deleting from utb_authors_limited is disabled."""
+    return None
 
 # Inline Jinja2 template pre zoznam autorov (HTMX swap)
 _AUTHORS_LIST_TMPL = """
@@ -20,7 +25,7 @@ _AUTHORS_LIST_TMPL = """
     <span class="fw-semibold">{{ author.primary }}</span>
     {% if author.variants|length > 1 %}
     <br><small class="text-muted">
-      {% for v in author.variants[1:] %}{{ v }}{% if not loop.last %} || {% endif %}{% endfor %}
+      {% for v in author.variants[1:] %}{{ v }}{% if not loop.last %}<br>{% endif %}{% endfor %}
     </small>
     {% endif %}
   </div>

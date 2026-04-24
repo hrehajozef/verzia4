@@ -35,10 +35,12 @@ def create_app() -> Flask:
     from web.blueprints.api.authors import bp as authors_bp
     from web.blueprints.api.crossref import bp as crossref_bp
     from web.blueprints.pipeline import bp as pipeline_bp
+    from web.blueprints.settings import bp as settings_bp
 
     app.register_blueprint(records_bp)
     app.register_blueprint(authors_bp, url_prefix="/api")
     app.register_blueprint(crossref_bp, url_prefix="/api")
     app.register_blueprint(pipeline_bp)
+    app.register_blueprint(settings_bp)
 
     return app

@@ -476,11 +476,24 @@ window.toggleRecordGroup = function (headingEl) {
               data-voliss="{{ voliss_val }}"
               data-doi="{{ rec.doi or '' }}">
             <td class="text-muted small" style="overflow:hidden; white-space:nowrap; text-overflow:ellipsis;"
-                title="{{ rec.resource_id }}">{{ rec.resource_id }}</td>
+                title="{{ rec.resource_id }}">
+              {{ rec.resource_id }}
+              {% if rec.duplicate_matches %}
+              <br><span class="badge text-bg-warning"
+                        title="{% for match in rec.duplicate_matches %}{{ match.resource_id }}: {{ match.summary }}{% if not loop.last %}&#10;{% endif %}{% endfor %}">dup</span>
+              {% endif %}
+              {% if rec.merged_children %}
+              <br><span class="badge text-bg-info"
+                        title="{{ rec.merged_summary or 'Zluceny zaznam' }}">zluc {{ rec.merged_children|length }}</span>
+              {% endif %}
+            </td>
             <td style="word-break:break-word;">
               <a href="/record/{{ rec.resource_id }}" class="text-decoration-none text-dark">
                 {{ rec.title or '(bez názvu)' }}
               </a>
+              {% if rec.merged_summary %}
+              <div class="small text-muted mt-1">Zlucene podla: {{ rec.merged_summary }}</div>
+              {% endif %}
             </td>
             <td class="text-muted small" style="overflow:hidden; word-break:break-word;">
               {% if rec.authors %}
@@ -494,6 +507,27 @@ window.toggleRecordGroup = function (headingEl) {
               {% if rec.doi %}<span title="{{ rec.doi }}">{{ rec.doi }}</span>{% else %}—{% endif %}
             </td>
           </tr>
+          {% for child in rec.merged_children %}
+          {% set child_voliss = (child.volume or '') + ('/' + child.issue if child.issue else '') if child.volume else (child.issue or '') %}
+          <tr class="duplicate-child-row">
+            <td class="text-muted small" title="Povodny zluceny zaznam">⬑ {{ child.resource_id }}</td>
+            <td style="word-break:break-word;">
+              <div>{{ child.title or '(bez nazvu)' }}</div>
+              <div class="small text-muted mt-1">{{ child.summary }}</div>
+            </td>
+            <td class="text-muted small" style="overflow:hidden; word-break:break-word;">
+              {% if child.authors %}
+                {{ child.authors[:2] | join('; ') }}{% if child.authors|length > 2 %} ...{% endif %}
+              {% endif %}
+            </td>
+            <td class="text-nowrap small">{{ child.year or '-' }}</td>
+            <td class="small" style="overflow:hidden; word-break:break-word;">{{ child.journal or '-' }}</td>
+            <td class="text-nowrap small">{{ child_voliss or '-' }}</td>
+            <td class="small" style="overflow:hidden; word-break:break-word;">
+              {% if child.doi %}<span title="{{ child.doi }}">{{ child.doi }}</span>{% else %}-{% endif %}
+            </td>
+          </tr>
+          {% endfor %}
           {% endfor %}
         </tbody>
       </table>

@@ -114,10 +114,10 @@ def _matches(val: Any, canonical: str) -> bool:
 def setup_journal_columns(engine: Engine | None = None) -> None:
     """
     Journal norm stĺpce sú teraz v utb_processing_queue.
-    Spusti 'queue-setup' namiesto tohto príkazu.
+    Spusti 'setup-processing-queue' namiesto tohto príkazu.
     """
-    print("[INFO] Journal norm stĺpce sú v utb_processing_queue. Spusti 'queue-setup'.")
-    print("[INFO] Príkaz journals-setup je zastaraný – môžeš ho ignorovať.")
+    print("[INFO] Journal norm stĺpce sú v utb_processing_queue. Spusti 'setup-processing-queue'.")
+    print("[INFO] Samostatný setup žurnálov bol odstránený z CLI.")
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -461,10 +461,10 @@ def run_journal_apply(
         groups[r.journal_norm_issn_key or "?"].append(r)
 
     mode_label = "PREVIEW" if preview else ("INTERAKTÍVNY" if interactive else "BATCH")
-    print(f"\n{'═'*68}")
+    print(f"\n{'='*68}")
     print(f"  Normalizácia publisher / relation.ispartof  [{mode_label}]")
-    print(f"  ISSN/ISBN skupín: {len(groups)}  │  Záznamov na zmenu: {len(rows)}")
-    print(f"{'═'*68}\n")
+    print(f"  ISSN/ISBN skupín: {len(groups)}  |  Záznamov na zmenu: {len(rows)}")
+    print(f"{'='*68}\n")
 
     # ── PREVIEW: zobraziť všetko, nič nezapisovať ──────────────────────
     if preview:
@@ -481,7 +481,7 @@ def run_journal_apply(
             ans = input("  Aplikovať túto skupinu? [y/N]: ").strip().lower()
             if ans == "y":
                 to_apply.extend(grp)
-                print(f"  {_GREEN}✓ Zaradené ({len(grp)} záznamov).{_RST}\n")
+                print(f"  {_GREEN}[OK] Zaradené ({len(grp)} záznamov).{_RST}\n")
             else:
                 print(f"  {_DIM}Preskočené.{_RST}\n")
 
@@ -522,9 +522,9 @@ def _print_group(issn_key: str, grp: list) -> None:
         if r.journal_norm_proposed_ispartof
     ]
 
-    print(f"{_BOLD}{'─'*68}{_RST}")
-    print(f"  {_BOLD}ISSN/ISBN:{_RST} {issn_key}  │  {_BOLD}Zdroj:{_RST} {api_src}  │  {len(grp)} záznamov na zmenu")
-    print(f"{'─'*68}")
+    print(f"{_BOLD}{'-'*68}{_RST}")
+    print(f"  {_BOLD}ISSN/ISBN:{_RST} {issn_key}  |  {_BOLD}Zdroj:{_RST} {api_src}  |  {len(grp)} záznamov na zmenu")
+    print(f"{'-'*68}")
 
     if pub_changes:
         proposed = pub_changes[0][1]   # rovnaká pre celú skupinu
@@ -532,8 +532,8 @@ def _print_group(issn_key: str, grp: list) -> None:
         print(f"  {_BOLD}dc.publisher:{_RST}")
         for val, cnt in counts.most_common():
             display = val if val else "(prázdne)"
-            print(f"    {_RED}─ {display!r}  ({cnt}×){_RST}")
-        print(f"    {_GREEN}→ {proposed!r}{_RST}")
+            print(f"    {_RED}- {display!r}  ({cnt}x){_RST}")
+        print(f"    {_GREEN}-> {proposed!r}{_RST}")
 
     if isp_changes:
         proposed = isp_changes[0][1]
@@ -541,8 +541,8 @@ def _print_group(issn_key: str, grp: list) -> None:
         print(f"  {_BOLD}dc.relation.ispartof:{_RST}")
         for val, cnt in counts.most_common():
             display = val if val else "(prázdne)"
-            print(f"    {_RED}─ {display!r}  ({cnt}×){_RST}")
-        print(f"    {_GREEN}→ {proposed!r}{_RST}")
+            print(f"    {_RED}- {display!r}  ({cnt}x){_RST}")
+        print(f"    {_GREEN}-> {proposed!r}{_RST}")
 
     print()
 

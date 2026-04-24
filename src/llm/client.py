@@ -18,12 +18,51 @@ from __future__ import annotations
 import json
 import re
 import time
+from datetime import datetime, timezone
 from abc import ABC, abstractmethod
 from typing import Any
 
 import httpx
 
 from src.config.settings import settings
+
+
+def _parse_retry_after_seconds(value: str | None) -> float | None:
+    if not value:
+        return None
+    raw = value.strip()
+    if not raw:
+        return None
+    try:
+        return max(float(raw), 0.0)
+    except ValueError:
+        pass
+    try:
+        target = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return max((target - datetime.now(timezone.utc)).total_seconds(), 0.0)
+
+
+def _compute_http_retry_delay(response: httpx.Response, attempt: int) -> float:
+    headers = response.headers
+
+    retry_after_ms = headers.get("retry-after-ms")
+    if retry_after_ms:
+        try:
+            return max(float(retry_after_ms) / 1000.0, 0.0)
+        except ValueError:
+            pass
+
+    for header in ("retry-after", "ratelimit-reset", "x-ratelimit-reset", "x-ratelimit-reset-requests"):
+        delay = _parse_retry_after_seconds(headers.get(header))
+        if delay is not None:
+            return delay
+
+    base = max(settings.llm_retry_base_delay, 1.0)
+    if response.status_code == 429:
+        return max(base * (2 ** (attempt - 1)), 10.0)
+    return base * attempt
 
 
 # ═══════════════════════════════════════════════════════════════════════
@@ -104,7 +143,7 @@ class OllamaClient(LLMClient):
                     return response.json()
             except (httpx.ConnectError, httpx.TimeoutException, httpx.RemoteProtocolError) as exc:
                 if attempt < max_retries:
-                    time.sleep(settings.llm_retry_base_delay * attempt)
+                    time.sleep(_compute_http_retry_delay(exc.response, attempt))
                     continue
                 raise RuntimeError(f"Ollama nedostupná po {max_retries} pokusoch: {exc}") from exc
             except httpx.HTTPStatusError as exc:
@@ -183,7 +222,7 @@ class CloudLLMCompatibleClient(LLMClient):
                     headers=self._headers(),
                 )
             if resp.status_code in {429, 500, 502, 503, 504} and attempt < max_retries:
-                time.sleep(settings.llm_retry_base_delay * attempt)
+                time.sleep(_compute_http_retry_delay(resp, attempt))
                 continue
             resp.raise_for_status()
             return resp.json()

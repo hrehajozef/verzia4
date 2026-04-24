@@ -1,11 +1,12 @@
 """
 reset_and_run.py
 
-Drops all local pipeline tables, then runs the full pipeline:
-  bootstrap → import-authors → queue-setup → dedup-setup
-  → validate → heuristics → dates → deduplicate
+Drops local pipeline tables, then runs the current end-to-end pipeline:
+  bootstrap-local-db -> setup-processing-queue -> setup-dedup-history
+  -> validate-metadata -> detect-authors -> extract-dates
+  -> normalize-journals -> deduplicate-records
 
-LLM steps (heuristics-llm, dates-llm) are skipped by default.
+LLM fallback steps (detect-authors-llm, extract-dates-llm) are skipped by default.
 Pass --llm to include them.
 
 Usage:
@@ -21,7 +22,7 @@ import sys
 from pathlib import Path
 from textwrap import dedent
 
-# Ensure project root is on sys.path when running as a script
+# Ensure project root is on sys.path when running as a script.
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from sqlalchemy import text
@@ -30,14 +31,10 @@ from src.config.settings import settings
 from src.db.engines import get_local_engine
 
 
-# ──────────────────────────────────────────────────────────────
-# Helpers
-# ──────────────────────────────────────────────────────────────
-
 def step(msg: str) -> None:
-    print(f"\n{'='*60}")
+    print(f"\n{'=' * 60}")
     print(f"  {msg}")
-    print(f"{'='*60}")
+    print(f"{'=' * 60}")
 
 
 def run(cmd: list[str]) -> None:
@@ -50,117 +47,100 @@ def run(cmd: list[str]) -> None:
 
 
 def cli(*args: str) -> None:
-    """Shortcut: uv run python -m src.cli <args>"""
+    """Shortcut: uv run python -m src.cli <args>."""
     run([sys.executable, "-m", "src.cli", *args])
 
-
-# ──────────────────────────────────────────────────────────────
-# Drop tables
-# ──────────────────────────────────────────────────────────────
 
 TABLES_TO_DROP = [
     "utb_processing_queue",
     "dedup_histoire",
-    "utb_internal_authors",
     "utb_metadata_arr",
 ]
 
 
 def drop_tables() -> None:
-    step("Dropping all local pipeline tables")
+    step("Dropping local pipeline tables")
     engine = get_local_engine()
     schema = settings.local_schema
     with engine.begin() as conn:
         for table in TABLES_TO_DROP:
             conn.execute(text(f'DROP TABLE IF EXISTS "{schema}"."{table}" CASCADE'))
             print(f"  dropped: {schema}.{table}")
-    print("[OK] All tables dropped.")
+    print("[OK] All selected tables dropped.")
 
-
-# ──────────────────────────────────────────────────────────────
-# Main
-# ──────────────────────────────────────────────────────────────
 
 def main() -> None:
     parser = argparse.ArgumentParser(
-        description="Reset local DB and run the full pipeline.",
+        description="Reset local DB and run the current full pipeline.",
         formatter_class=argparse.RawDescriptionHelpFormatter,
-        epilog=dedent("""\
+        epilog=dedent(
+            """\
             Pipeline steps (in order):
               1. drop tables
-              2. bootstrap        – copy remote → local
-              3. import-authors   – load CSV author registry
-              4. queue-setup      – create utb_processing_queue
-              5. dedup-setup      – create dedup_histoire
-              6. validate         – data quality checks
-              7. heuristics       – author matching (WoS/Scopus)
-              8. dates            – publication date parsing
-              9. deduplicate      – find & merge duplicates
-             10. heuristics-llm  – LLM author fallback  (--llm only)
-             11. dates-llm       – LLM date fallback    (--llm only)
-        """),
+              2. bootstrap-local-db       - copy remote metadata to local DB
+              3. setup-processing-queue   - create/update pipeline queue
+              4. setup-dedup-history      - create deduplication history table
+              5. validate-metadata        - run data quality checks
+              6. detect-authors           - detect UTB internal authors
+              7. extract-dates            - parse fulltext date fields
+              8. normalize-journals       - propose journal/publisher values
+              9. deduplicate-records      - find and merge duplicates
+             10. detect-authors-llm       - LLM author fallback (--llm only)
+             11. extract-dates-llm        - LLM date fallback   (--llm only)
+            """
+        ),
     )
     parser.add_argument(
         "--llm",
         action="store_true",
-        help="Also run LLM fallback steps (heuristics-llm, dates-llm)",
+        help="Also run LLM fallback steps (detect-authors-llm, extract-dates-llm).",
     )
     parser.add_argument(
         "--skip-drop",
         action="store_true",
-        help="Skip dropping tables (useful if bootstrap already ran)",
+        help="Skip dropping tables.",
     )
     args = parser.parse_args()
 
-    # 1. Drop
     if not args.skip_drop:
         drop_tables()
     else:
         step("Skipping table drop (--skip-drop)")
 
-    # 2. Bootstrap (copies remote table to local)
-    step("bootstrap – copying remote table to local DB")
-    cli("bootstrap")
+    step("bootstrap-local-db - copying remote table to local DB")
+    cli("bootstrap-local-db")
 
-    # 3. Import authors from CSV
-    step("import-authors – loading author registry from CSV")
-    cli("import-authors")
+    step("setup-processing-queue - creating/updating utb_processing_queue")
+    cli("setup-processing-queue")
 
-    # 4. Create queue table
-    step("queue-setup – creating utb_processing_queue")
-    cli("queue-setup")
+    step("setup-dedup-history - creating dedup_histoire")
+    cli("setup-dedup-history")
 
-    # 5. Create dedup history table
-    step("dedup-setup – creating dedup_histoire")
-    cli("dedup-setup")
+    step("validate-metadata - running data quality checks")
+    cli("validate-metadata")
 
-    # 6. Validate
-    step("validate – running data quality checks")
-    cli("validate")
+    step("detect-authors - matching internal authors")
+    cli("detect-authors")
 
-    # 7. Author heuristics
-    step("heuristics – matching internal authors")
-    cli("heuristics")
+    step("extract-dates - parsing publication dates")
+    cli("extract-dates")
 
-    # 8. Date heuristics
-    step("dates – parsing publication dates")
-    cli("dates")
+    step("normalize-journals - proposing journal and publisher values")
+    cli("normalize-journals")
 
-    # 9. Deduplicate
-    step("deduplicate – finding and merging duplicates")
-    cli("deduplicate")
+    step("deduplicate-records - finding and merging duplicates")
+    cli("deduplicate-records")
 
-    # 10–11. LLM steps (optional)
     if args.llm:
-        step("heuristics-llm – LLM fallback for unmatched authors")
-        cli("heuristics-llm")
+        step("detect-authors-llm - LLM fallback for unclear authors")
+        cli("detect-authors-llm")
 
-        step("dates-llm – LLM fallback for unparsed dates")
-        cli("dates-llm")
+        step("extract-dates-llm - LLM fallback for unclear dates")
+        cli("extract-dates-llm")
 
     step("DONE")
     print("\nAll pipeline steps completed successfully.")
-    print("You can now run:  uv run python app.py")
+    print("You can now run: uv run python app.py")
 
 
 if __name__ == "__main__":

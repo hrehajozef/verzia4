@@ -1,25 +1,22 @@
-Aktualizovane: 2026-04-13
+TODO / kontrolny zoznam
+Aktualizovane: 2026-04-20
 
 Hotove v aktualnom stave:
+- Pipeline UI je presunute do `/settings/pipeline`.
+- Samostatny nav link `Pipeline` bol odstráneny.
+- Interny casovac, schedule API a `data/pipeline_schedules.json` boli odstranene.
+- UI obsahuje navod na Windows Task Scheduler a Linux cron.
+- Zastarane CLI prikazy boli odstranene z registrovanych Typer prikazov.
+- Aktualny pipeline katalog pouziva zrozumitelne nazvy prikazov.
 
-- Stranka `/pipeline` spusta CLI prikazy zo `src/cli/__main__.py` v grafickom prostredi.
-- Pipeline prikazy su rozdelene do logickych sekcii.
-- Kazdy prikaz ma checkbox vyberu, nazov, napovedu, volitelne argumenty s napovedou a tlacidlo `Spustit teraz`.
-- Argumenty typu boolean su checkboxy; hodnotove argumenty su textove/select vstupy.
-- Oznacene prikazy sa daju spustit hromadne.
-- Oznacene prikazy sa daju naplanovat na konkretny cas.
-- Naplanovane behy sa zobrazuju navrchu stranky a daju sa odstranit.
-- Scheduler kontroluje naplanovane behy v background threade a zapisuje vystup do `data/pipeline_schedules.json`.
-- Detail zaznamu podporuje ulozenie do zasobnika cez `Ctrl+S` na Linuxe/Windows a `Cmd+S` na macOS.
-- Scrollbar v author paneli je odsadeny od trojbodkoveho menu autora a globalne scrollbary su sirsie.
-- UI navrhy pre autorov a datumy maju prioritu LLM vysledok -> validacia -> heuristika/queue fallback.
-- Detekcia internych autorov lepsie rozpoznava mena bez diakritiky, obratene poradie a WoS inicialove tvary.
-- `Revised`, `Resubmitted`, `1st/2nd/3rd Revision` a `Prepracovano` sa ukladaju pod `utb_date_reviewed`.
-- Publisher/ispartof lookup skusa Crossref Works podla DOI pred ISSN fallbackmi.
+Aktualne rizika na sledovanie:
+- Po realnom behu pipeline skontrolovat vzorku autorov flagovanych ako nejednoznacne iniciály alebo priezviska.
+- Pri DB migracii v starsom prostredi overit, ze `setup-processing-queue` doplnil vsetky nove queue stlpce.
+- Pri hromadnom `apply-journal-normalization` odporucam najprv spustit `--preview`.
+- Externe planovane ulohy v Task Scheduler / cron logovat do samostatneho suboru.
 
-Zname rizika / dalsie mozne kontroly:
-
-- `data/pipeline_schedules.json` je runtime stav, nie zdrojovy kod; pred commitom rozhodnut, ci ma zostat ignorovany alebo sa nema commitovat.
-- `journals-apply --interactive` je CLI interaktivny rezim; vo web UI je bezpecnejsie pouzivat preview alebo neinteraktivne batch spustenie.
-- Pri realnych datach odporucam spustit porovnanie autorov `heuristics-compare` po novom matchingu a pozriet vzorku nejednoznacnych `ambiguous_initials`/`ambiguous_surname` pripadov.
-- Po nasadeni queue migracie overit, ze existujuce `date_llm_result` stlpce su JSONB a nie legacy TEXT.
+Manualny smoke test:
+1. Otvor `/settings/pipeline`.
+2. Over, ze sa nezobrazuje casovanie ani zoznam naplanovanych behov.
+3. Spusti status prikaz, napriklad `metadata-validation-status`.
+4. Over, ze terminalovy vystup pride cez SSE.

@@ -1,33 +1,40 @@
-"""CLI vstupný bod pre UTB metadata pipeline.
+"""CLI vstupny bod pre UTB metadata pipeline.
 
-Pipeline (odporúčané poradie):
-  1. bootstrap           – skopíruje remote tabuľku do lokálnej DB
-  2. import-authors      – importuje interných autorov z CSV do lokálnej DB
-  3. queue-setup         – vytvorí utb_processing_queue (spusti raz, pred ostatnými)
-  4. validate            – validácia metadát (trailing spaces, mojibake, DOI, ...)
-  5. heuristics          – heuristické spracovanie mien a afiliácií autorov
-  6. dates               – heuristické parsovanie dátumov
-  7. heuristics-llm      – LLM spracovanie autorov (záznamy s needs_llm=TRUE)
-  8. dates-llm           – LLM spracovanie dátumov (záznamy s date_needs_llm=TRUE)
-  9. journals-lookup     – normalizácia publisher/ispartof cez ISSN/ISBN API
- 10. deduplicate         – identifikácia duplikátov
+Odporucane poradie:
+  1. bootstrap-local-db
+  2. setup-processing-queue
+  3. setup-dedup-history
+  4. validate-metadata
+  5. detect-authors
+  6. extract-dates
+  7. normalize-journals
+  8. deduplicate-records
 
-Príkazy štatistík:
-  status         – štatistiky spracovania autorov
-  dates-status   – štatistiky dátumov
-  validate-status – štatistiky validácie
-  dedup-status   – štatistiky deduplikácie
+Volitelne LLM fallbacky:
+  detect-authors-llm
+  extract-dates-llm
 
-  export         – exportuje výsledky do CSV
+Kontrolne prehlady:
+  metadata-validation-status
+  author-detection-status
+  date-extraction-status
+  journal-normalization-status
+  deduplication-status
 """
 
 from __future__ import annotations
 
-import csv
-from pathlib import Path
-
+import sys
+import io
 import typer
 from sqlalchemy import text
+
+# Windows terminál predvolene používa cp1250, ktoré nepodporuje všetky Unicode znaky.
+# Prepneme stdout/stderr na UTF-8, aby sa dáta z DB (aj špeciálne znaky) tlačili správne.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+if hasattr(sys.stderr, "reconfigure"):
+    sys.stderr.reconfigure(encoding="utf-8", errors="replace")
 
 from src.config.settings import settings
 from src.db.engines import get_local_engine, get_remote_engine, test_connection
@@ -39,7 +46,7 @@ app = typer.Typer(name="utb-pipeline", add_completion=False)
 # BOOTSTRAP
 # ═══════════════════════════════════════════════════════════════════════
 
-@app.command()
+@app.command(name="bootstrap-local-db")
 def bootstrap(
     drop: bool = typer.Option(False, "--drop", help="Zmaže lokálnu tabuľku a vytvorí ju znova."),
 ) -> None:
@@ -62,50 +69,10 @@ def bootstrap(
 # AUTORI
 # ═══════════════════════════════════════════════════════════════════════
 
-@app.command(name="import-authors")
-def import_authors(
-    csv_file: Path = typer.Option(
-        Path("./data/autori_utb_oficial_utf8.csv"), "--csv",
-        help="CSV súbor s internými autormi (priezvisko;krstné_meno, s hlavičkou).",
-    ),
-) -> None:
-    """
-    Import interných autorov z CSV do lokálnej tabuľky utb_internal_authors.
-
-    Formát CSV: priezvisko;krstné_meno, 1 riadok = 1 osoba, s hlavičkou.
-
-    Príklady:
-      python -m src.cli import-authors
-      python -m src.cli import-authors --csv data/autori_utb_oficial_utf8.csv
-    """
-    from src.authors.registry import (
-        clear_author_registry_cache,
-        import_authors_to_db,
-        load_authors_from_csv,
-        setup_authors_table,
-    )
-
-    if not csv_file.exists():
-        typer.echo(f"[CHYBA] CSV súbor neexistuje: {csv_file}", err=True)
-        raise typer.Exit(1)
-
-    engine = get_local_engine()
-    setup_authors_table(engine)
-
-    typer.echo(f"Načítavam autorov z CSV: {csv_file}")
-    authors = load_authors_from_csv(csv_file)
-
-    count = import_authors_to_db(authors, engine)
-    clear_author_registry_cache()
-
-    typer.echo(f"[OK] Importovaných záznamov: {count}")
-
-
-# ═══════════════════════════════════════════════════════════════════════
 # VALIDÁCIA
 # ═══════════════════════════════════════════════════════════════════════
 
-@app.command(name="queue-setup")
+@app.command(name="setup-processing-queue")
 def queue_setup() -> None:
     """
     Vytvorí tabuľku utb_processing_queue (medzitabuľka pre výstupy pipeline).
@@ -117,7 +84,7 @@ def queue_setup() -> None:
     setup_processing_queue()
 
 
-@app.command(name="validate-setup")
+# Deprecated setup alias: setup-processing-queue now prepares validation columns.
 def validate_setup() -> None:
     """
     Pridá validation stĺpce do lokálnej DB tabuľky.
@@ -128,7 +95,7 @@ def validate_setup() -> None:
     setup_validation_columns()
 
 
-@app.command(name="validate")
+@app.command(name="validate-metadata")
 def validate(
     limit:      int  = typer.Option(0,     "--limit",      help="Max počet záznamov (0 = všetky)."),
     batch_size: int  = typer.Option(500,   "--batch-size", help="Veľkosť dávky."),
@@ -138,17 +105,17 @@ def validate(
     Validácia kvality metadát + návrhy opráv.
 
     Kontroly: trailing spaces, mojibake, DOI formát, URL query params, OBDID existencia.
-    Navrhnuté opravy sa uložia do validation_suggested_fixes – spusti 'apply-fixes' na ich aplikovanie.
+    Navrhnuté opravy sa uložia do validation_suggested_fixes – spusti 'apply-validation-fixes' na ich aplikovanie.
 
     Príklady:
-      python -m src.cli validate
-      python -m src.cli validate --limit 100 --revalidate
+      python -m src.cli validate-metadata
+      python -m src.cli validate-metadata --limit 100 --revalidate
     """
     from src.quality.checks import run_validation
     run_validation(batch_size=batch_size, limit=limit, revalidate=revalidate)
 
 
-@app.command(name="apply-fixes")
+@app.command(name="apply-validation-fixes")
 def apply_fixes(
     preview: bool = typer.Option(False, "--preview", help="Zobraz farebný diff bez zápisu do DB."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Alias pre --preview."),
@@ -161,15 +128,15 @@ def apply_fixes(
     Po aplikovaní sa záznamy automaticky označia na re-validáciu.
 
     Príklady:
-      python -m src.cli apply-fixes --preview
-      python -m src.cli apply-fixes
-      python -m src.cli apply-fixes --limit 50
+      python -m src.cli apply-validation-fixes --preview
+      python -m src.cli apply-validation-fixes
+      python -m src.cli apply-validation-fixes --limit 50
     """
     from src.quality.checks import run_apply_fixes
     run_apply_fixes(preview=preview, dry_run=dry_run, limit=limit)
 
 
-@app.command(name="validate-status")
+@app.command(name="metadata-validation-status")
 def validate_status() -> None:
     """Štatistiky validácie metadát."""
     from src.quality.checks import print_validation_status
@@ -180,7 +147,7 @@ def validate_status() -> None:
 # HEURISTIKY – AUTORI
 # ═══════════════════════════════════════════════════════════════════════
 
-@app.command(name="heuristics")
+@app.command(name="detect-authors")
 def heuristics_run(
     limit:            int        = typer.Option(0,     "--limit",            help="Max počet záznamov (0 = všetky)."),
     batch_size:       int | None = typer.Option(None,  "--batch-size",       help="Veľkosť dávky."),
@@ -193,18 +160,19 @@ def heuristics_run(
     run_heuristics(batch_size=batch_size, limit=limit, reprocess_errors=reprocess_errors, reprocess=reprocess, normalize=normalize)
 
 
-@app.command(name="heuristics-llm")
+@app.command(name="detect-authors-llm")
 def heuristics_llm(
     limit:      int        = typer.Option(0,    "--limit",      help="Max počet záznamov (0 = všetky)."),
     batch_size: int | None = typer.Option(None, "--batch-size", help="Veľkosť dávky."),
     provider:   str | None = typer.Option(None, "--provider",   help="ollama alebo openai."),
+    reprocess:  bool       = typer.Option(False, "--reprocess", help="Spracuje znova aj záznamy so stavom processed alebo validation_error."),
 ) -> None:
     """LLM spracovanie autorov (záznamy s needs_llm=TRUE, po heuristikách)."""
     from src.llm.tasks.authors import run_llm
-    run_llm(batch_size=batch_size, limit=limit, provider=provider)
+    run_llm(batch_size=batch_size, limit=limit, provider=provider, reprocess=reprocess)
 
 
-@app.command(name="heuristics-compare")
+@app.command(name="compare-author-detection")
 def heuristics_compare() -> None:
     """
     Porovná author_internal_names (program) vs utb.contributor.internalauthor (knihovník).
@@ -215,7 +183,7 @@ def heuristics_compare() -> None:
     compare_with_librarian()
 
 
-@app.command(name="heuristics-status")
+@app.command(name="author-detection-status")
 def status() -> None:
     """Štatistiky spracovania mien a afiliácií."""
     from src.common.constants import QUEUE_TABLE
@@ -251,7 +219,7 @@ def status() -> None:
 # HEURISTIKY – DÁTUMY
 # ═══════════════════════════════════════════════════════════════════════
 
-@app.command(name="dates-setup")
+# Deprecated setup alias: setup-processing-queue now prepares date columns.
 def dates_setup() -> None:
     """
     Pridá DATE stĺpce do lokálnej DB tabuľky.
@@ -262,7 +230,7 @@ def dates_setup() -> None:
     setup_date_columns()
 
 
-@app.command(name="dates")
+@app.command(name="extract-dates")
 def dates_run(
     limit:      int  = typer.Option(0,     "--limit",      help="Max počet záznamov (0 = všetky)."),
     batch_size: int  = typer.Option(200,   "--batch-size", help="Veľkosť dávky."),
@@ -272,15 +240,15 @@ def dates_run(
     Heuristické parsovanie dátumov z utb_fulltext_dates.
 
     Príklady:
-      python -m src.cli dates
-      python -m src.cli dates --limit 50
-      python -m src.cli dates --reprocess
+      python -m src.cli extract-dates
+      python -m src.cli extract-dates --limit 50
+      python -m src.cli extract-dates --reprocess
     """
     from src.dates.heuristics import run_date_heuristics
     run_date_heuristics(batch_size=batch_size, limit=limit, reprocess=reprocess)
 
 
-@app.command(name="dates-llm")
+@app.command(name="extract-dates-llm")
 def dates_llm(
     limit:         int        = typer.Option(0,    "--limit",         help="Max počet záznamov (0 = všetky)."),
     batch_size:    int | None = typer.Option(None, "--batch-size",    help="Veľkosť dávky."),
@@ -293,7 +261,7 @@ def dates_llm(
     run_date_llm(batch_size=batch_size, limit=limit, provider=provider, reprocess=reprocess, include_dash=include_dash)
 
 
-@app.command(name="dates-status")
+@app.command(name="date-extraction-status")
 def dates_status() -> None:
     """Štatistiky spracovania dátumov."""
     from src.dates.heuristics import print_date_status
@@ -304,18 +272,18 @@ def dates_status() -> None:
 # DEDUPLIKÁCIA
 # ═══════════════════════════════════════════════════════════════════════
 
-@app.command(name="dedup-setup")
+@app.command(name="setup-dedup-history")
 def dedup_setup() -> None:
     """
     Vytvorí tabuľku dedup_histoire pre uchovanie histórie pred zlúčením.
 
-    Spusti raz pred prvým spustením deduplicate. Bezpečné spustiť opakovane.
+    Spusti raz pred prvým spustením deduplicate-records. Bezpečné spustiť opakovane.
     """
     from src.quality.dedup import setup_dedup_table
     setup_dedup_table()
 
 
-@app.command(name="deduplicate")
+@app.command(name="deduplicate-records")
 def deduplicate(
     by:        str   = typer.Option(
         "dc.identifier.doi", "--by",
@@ -337,9 +305,9 @@ def deduplicate(
     pred tým nakopírované do dedup_histoire. Autoplagiát a fuzzy sú len flagované.
 
     Príklady:
-      python -m src.cli deduplicate
-      python -m src.cli deduplicate --dry-run
-      python -m src.cli deduplicate --no-fuzzy
+      python -m src.cli deduplicate-records
+      python -m src.cli deduplicate-records --dry-run
+      python -m src.cli deduplicate-records --no-fuzzy
     """
     from src.quality.dedup import run_deduplication
 
@@ -353,7 +321,7 @@ def deduplicate(
     )
 
 
-@app.command(name="dedup-status")
+@app.command(name="deduplication-status")
 def dedup_status() -> None:
     """Štatistiky deduplikácie."""
     from src.quality.dedup import print_dedup_status
@@ -364,7 +332,7 @@ def dedup_status() -> None:
 # NORMALIZÁCIA PUBLISHER / RELATION.ISPARTOF
 # ═══════════════════════════════════════════════════════════════════════
 
-@app.command(name="journals-setup")
+# Deprecated setup alias: setup-processing-queue now prepares journal normalization columns.
 def journals_setup() -> None:
     """
     Pridá journal_norm_* stĺpce do lokálnej tabuľky.
@@ -375,7 +343,7 @@ def journals_setup() -> None:
     setup_journal_columns()
 
 
-@app.command(name="journals-lookup")
+@app.command(name="normalize-journals")
 def journals_lookup(
     limit:     int  = typer.Option(0,     "--limit",     help="Max počet ISSN/ISBN skupín (0 = všetky)."),
     reprocess: bool = typer.Option(False, "--reprocess", help="Spracovať aj záznamy so statusom no_change/has_proposal."),
@@ -385,15 +353,15 @@ def journals_lookup(
     ukladá návrhy normalizácie publisher a relation.ispartof.
 
     Príklady:
-      python -m src.cli journals-lookup
-      python -m src.cli journals-lookup --limit 20
-      python -m src.cli journals-lookup --reprocess
+      python -m src.cli normalize-journals
+      python -m src.cli normalize-journals --limit 20
+      python -m src.cli normalize-journals --reprocess
     """
     from src.journals.normalizer import run_journal_lookup
     run_journal_lookup(limit=limit, reprocess=reprocess)
 
 
-@app.command(name="journals-apply")
+@app.command(name="apply-journal-normalization")
 def journals_apply(
     preview:     bool           = typer.Option(False, "--preview",     help="Zobraziť diff bez zápisu."),
     interactive: bool           = typer.Option(False, "--interactive", help="Potvrdzovať každú ISSN skupinu zvlášť (y/n)."),
@@ -409,16 +377,16 @@ def journals_apply(
       (bez flagu)    : zobraziť všetko, jedno spoločné potvrdenie
 
     Príklady:
-      python -m src.cli journals-apply --preview
-      python -m src.cli journals-apply --interactive
-      python -m src.cli journals-apply --issn 0002-9726 --interactive
-      python -m src.cli journals-apply
+      python -m src.cli apply-journal-normalization --preview
+      python -m src.cli apply-journal-normalization --interactive
+      python -m src.cli apply-journal-normalization --issn 0002-9726 --interactive
+      python -m src.cli apply-journal-normalization
     """
     from src.journals.normalizer import run_journal_apply
     run_journal_apply(preview=preview, interactive=interactive, limit=limit, issn_filter=issn)
 
 
-@app.command(name="journals-status")
+@app.command(name="journal-normalization-status")
 def journals_status() -> None:
     """Štatistiky normalizácie publisher / relation.ispartof."""
     from src.journals.normalizer import print_journal_status

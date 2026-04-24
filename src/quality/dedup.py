@@ -18,13 +18,12 @@ Spracovanie:
   - autoplagiat / fuzzy_title          → zapíše flag do flags['duplicates'], bez zmeny
 
 Príkazy:
-  python -m src.cli dedup-setup      # vytvorí tabuľku dedup_histoire (raz)
-  python -m src.cli deduplicate      # spustí deduplikáciu
+  python -m src.cli setup-dedup-history  # vytvorí tabuľku dedup_histoire (raz)
+  python -m src.cli deduplicate-records  # spustí deduplikáciu
 """
 
 from __future__ import annotations
 
-import hashlib
 import json
 import re
 import unicodedata
@@ -40,10 +39,46 @@ from src.config.settings import settings
 from src.db.engines import get_local_engine
 
 DEDUP_VERSION = "2.0.0"
+CONTENT_TITLE_THRESHOLD = 0.96
+ALLOWED_DEDUP_COLUMNS = {
+    "dc.identifier.doi",
+    "utb.identifier.obdid",
+    "utb.identifier.wok",
+    "utb.identifier.scopus",
+    "dc.title",
+}
 
 _PAGINATION_COLS = [
     "utb.relation.volume",
     "utb.relation.issue",
+]
+
+_MERGE_UNION_COLUMNS = [
+    "dc.contributor.author",
+    "utb.contributor.internalauthor",
+    "utb.faculty",
+    "utb.ou",
+    "dc.identifier.doi",
+    "dc.identifier.issn",
+    "dc.identifier.isbn",
+    "dc.identifier.uri",
+    "utb.identifier.wok",
+    "utb.identifier.scopus",
+    "utb.source",
+]
+
+_MERGE_FILL_COLUMNS = [
+    "dc.title",
+    "dc.date.issued",
+    "dc.publisher",
+    "dc.relation.ispartof",
+    "utb.relation.volume",
+    "utb.relation.issue",
+    "dc.citation.spage",
+    "dc.citation.epage",
+    "dc.rights",
+    "dc.rights.uri",
+    "dc.rights.access",
 ]
 
 
@@ -83,6 +118,35 @@ def _normalize_title_for_dedup(s: str | None) -> str:
     t = "".join(c for c in t if unicodedata.category(c) != "Mn")  # bez akcentov
     t = _DEDUP_PUNCT.sub(" ", t)
     return re.sub(r"\s+", " ", t).strip()
+
+
+def _title_similarity(left: str | None, right: str | None) -> float:
+    if not left or not right:
+        return 0.0
+    return jellyfish.jaro_winkler_similarity(left, right)
+
+
+def _content_title_block_keys(title: str) -> set[str]:
+    """
+    Vrati viac blokovacich klucov, aby sa do porovnania dostali aj tituly
+    s drobnou textovou variaciou, nie iba 100 % rovnake normalizovane nazvy.
+    """
+    if not title:
+        return set()
+
+    tokens = [token for token in title.split() if token]
+    keys = {
+        f"prefix16:{title[:16]}",
+        f"prefix24:{title[:24]}",
+    }
+
+    if len(tokens) >= 2:
+        keys.add(f"first2:{' '.join(tokens[:2])}")
+        keys.add(f"last2:{' '.join(tokens[-2:])}")
+    if len(tokens) >= 3:
+        keys.add(f"first3:{' '.join(tokens[:3])}")
+
+    return keys
 
 
 def _norm_column_value(value: Any) -> str:
@@ -133,8 +197,12 @@ def _pagination_present(rec: dict) -> bool:
 def find_duplicates_by_column(
     engine:    Engine,
     by_column: str = "dc.identifier.doi",
-) -> list[tuple[list[int], str, str, float]]:
+) -> list[tuple[list[int], str, str, float, dict[str, Any]]]:
     """Nájde skupiny záznamov s rovnakou hodnotou stĺpca (case-insensitive)."""
+    if by_column not in ALLOWED_DEDUP_COLUMNS:
+        allowed = ", ".join(sorted(ALLOWED_DEDUP_COLUMNS))
+        raise ValueError(f"Nepodporovany stlpec pre deduplikaciu: {by_column}. Povolené: {allowed}")
+
     schema = settings.local_schema
     table  = settings.local_table
 
@@ -148,12 +216,25 @@ def find_duplicates_by_column(
 
     groups: dict[str, list[int]] = defaultdict(list)
     for row in rows:
-        norm_val = _norm_column_value(row[1])
+        resource_id = row.resource_id if hasattr(row, "resource_id") else row[0]
+        raw_value = row[1]
+        norm_val = _norm_column_value(raw_value)
         if norm_val:
-            groups[norm_val].append(row.resource_id)
+            groups[norm_val].append(resource_id)
 
     return [
-        (ids, by_column, norm_val, 1.0)
+        (
+            ids,
+            by_column,
+            norm_val,
+            1.0,
+            {
+                "basis": "exact_column",
+                "column": by_column,
+                "matched_value": norm_val,
+                "group_size": len(ids),
+            },
+        )
         for norm_val, ids in groups.items()
         if len(ids) > 1
     ]
@@ -165,7 +246,7 @@ def find_duplicates_by_column(
 
 def find_content_duplicates(
     engine: Engine,
-) -> list[tuple[int, int, str, float, str]]:
+) -> list[tuple[int, int, str, float, dict[str, Any]]]:
     """
     Nájde záznamy s identickým normalizovaným obsahom (title + autori + abstrakt).
 
@@ -215,10 +296,10 @@ def find_content_duplicates(
     title_buckets: dict[str, list[dict]] = defaultdict(list)
     for rec in records:
         if rec["norm_title"]:
-            key = hashlib.md5(rec["norm_title"].encode()).hexdigest()
-            title_buckets[key].append(rec)
+            for key in _content_title_block_keys(rec["norm_title"]):
+                title_buckets[key].append(rec)
 
-    results:    list[tuple[int, int, str, float, str]] = []
+    results:    list[tuple[int, int, str, float, dict[str, Any]]] = []
     seen_pairs: set[tuple[int, int]] = set()
 
     for bucket in title_buckets.values():
@@ -231,47 +312,66 @@ def find_content_duplicates(
                 if pair in seen_pairs:
                     continue
 
-                # Kontrola zhody titulu (100%)
-                if rec_a["norm_title"] != rec_b["norm_title"]:
+                title_score = _title_similarity(rec_a["norm_title"], rec_b["norm_title"])
+                if title_score < CONTENT_TITLE_THRESHOLD:
                     continue
 
                 # Kontrola zhody autorov
+                authors_comparable = bool(rec_a["norm_authors"] and rec_b["norm_authors"])
+                authors_match = authors_comparable and rec_a["norm_authors"] == rec_b["norm_authors"]
                 if rec_a["norm_authors"] and rec_b["norm_authors"]:
-                    if rec_a["norm_authors"] != rec_b["norm_authors"]:
+                    if not authors_match:
                         continue
 
                 # Kontrola zhody abstraktu (ak obidva majú)
+                abstract_comparable = bool(rec_a["norm_abstract"] and rec_b["norm_abstract"])
+                abstract_match = abstract_comparable and rec_a["norm_abstract"] == rec_b["norm_abstract"]
                 if rec_a["norm_abstract"] and rec_b["norm_abstract"]:
-                    if rec_a["norm_abstract"] != rec_b["norm_abstract"]:
+                    if not abstract_match:
                         continue
-
-                seen_pairs.add(pair)
 
                 same_issn = (
                     rec_a["issn"] and rec_b["issn"]
                     and rec_a["issn"] == rec_b["issn"]
                 )
+                if not (authors_match or abstract_match or same_issn):
+                    continue
+
+                seen_pairs.add(pair)
+
                 a_has_pages = _pagination_present(rec_a)
                 b_has_pages = _pagination_present(rec_b)
                 a_type = rec_a["doctype"]
                 b_type = rec_b["doctype"]
                 type_combo = frozenset({a_type, b_type})
+                details = {
+                    "basis": "content",
+                    "title_similarity": round(title_score, 4),
+                    "title_threshold": CONTENT_TITLE_THRESHOLD,
+                    "authors_match": authors_match,
+                    "authors_compared": authors_comparable,
+                    "abstract_match": abstract_match,
+                    "abstract_compared": abstract_comparable,
+                    "same_issn": bool(same_issn),
+                    "issn_a": rec_a["issn"] or None,
+                    "issn_b": rec_b["issn"] or None,
+                    "doctype_a": a_type or None,
+                    "doctype_b": b_type or None,
+                    "pagination_a": a_has_pages,
+                    "pagination_b": b_has_pages,
+                }
 
                 if same_issn and (a_has_pages != b_has_pages):
                     match_type = "early_access"
-                    details    = f"issn={rec_a['issn']}, pagination_a={a_has_pages}, pagination_b={b_has_pages}"
                 elif not same_issn and type_combo == {"article", "conferenceobject"}:
                     match_type = "merged_type"
-                    details    = f"issn_a={rec_a['issn']}, issn_b={rec_b['issn']}, types={a_type}+{b_type}"
                 elif not same_issn:
                     match_type = "autoplagiat"
-                    details    = f"issn_a={rec_a['issn']}, issn_b={rec_b['issn']}"
                 else:
-                    # Rovnaký ISSN, obaja majú pagination (alebo obaja nemajú) – presný duplikát
+                    # Rovnaký ISSN, obaja majú pagination (alebo obaja nemajú) – obsahový duplikát
                     match_type = "exact:content"
-                    details    = f"issn={rec_a['issn']}"
 
-                results.append((rec_a["id"], rec_b["id"], match_type, 1.0, details))
+                results.append((rec_a["id"], rec_b["id"], match_type, round(title_score, 4), details))
 
     return results
 
@@ -283,7 +383,7 @@ def find_content_duplicates(
 def find_duplicates_fuzzy(
     engine:          Engine,
     title_threshold: float = 0.85,
-) -> list[tuple[int, int, str, float, str]]:
+) -> list[tuple[int, int, str, float, dict[str, Any]]]:
     """
     Fuzzy porovnanie normalizovaných titulov (Jaro-Winkler ≥ threshold).
     Blocking: rok vydania ±1.
@@ -362,7 +462,15 @@ def find_duplicates_fuzzy(
                 else:
                     match_type = "fuzzy_title"
 
-                details = f"score={score:.4f}"
+                details = {
+                    "basis": "fuzzy_title",
+                    "title_similarity": round(score, 4),
+                    "title_threshold": title_threshold,
+                    "year_a": rec_a["year"],
+                    "year_b": rec_b["year"],
+                    "issn_match": issn_match,
+                    "isbn_match": isbn_match,
+                }
                 duplicates.append((rec_a["id"], rec_b["id"], match_type, round(score, 4), details))
 
     return duplicates
@@ -398,11 +506,49 @@ def setup_dedup_table(engine: Engine | None = None) -> None:
                 SELECT * FROM "{schema}"."{table}" WHERE FALSE
             """))
             print(f"  + tabuľka {hist} vytvorená (štruktúra z {table})")
+        else:
+            # Synchronizuj chýbajúce stĺpce zo zdrojovej tabuľky
+            src_cols = conn.execute(text("""
+                SELECT column_name, data_type, character_maximum_length,
+                       udt_name
+                FROM information_schema.columns
+                WHERE table_schema = :schema AND table_name = :tbl
+                ORDER BY ordinal_position
+            """), {"schema": schema, "tbl": table}).fetchall()
+
+            hist_col_names = set(conn.execute(text("""
+                SELECT column_name
+                FROM information_schema.columns
+                WHERE table_schema = :schema AND table_name = :tbl
+            """), {"schema": schema, "tbl": hist}).scalars())
+
+            added = 0
+            for row in src_cols:
+                col = row[0]
+                if col in hist_col_names:
+                    continue
+                udt = row[3]
+                if udt.startswith("_"):
+                    col_type = f"{udt[1:]}[]"
+                elif row[1] == "character varying":
+                    col_type = f"VARCHAR({row[2]})" if row[2] else "TEXT"
+                elif row[1] == "USER-DEFINED":
+                    col_type = udt
+                else:
+                    col_type = row[1].upper()
+                conn.execute(text(
+                    f'ALTER TABLE "{schema}"."{hist}" ADD COLUMN IF NOT EXISTS "{col}" {col_type}'
+                ))
+                added += 1
+            if added:
+                print(f"  + doplnených {added} chýbajúcich stĺpcov do {hist}")
 
         # Pridaj dedup stĺpce (idempotentné)
         for col, typ in [
             ("dedup_merged_at",         "TIMESTAMPTZ"),
             ("dedup_match_type",        "TEXT"),
+            ("dedup_match_score",       "DOUBLE PRECISION"),
+            ("dedup_match_details",     "JSONB"),
             ("dedup_kept_resource_id",  "INTEGER"),
             ("dedup_other_resource_id", "INTEGER"),
         ]:
@@ -420,24 +566,91 @@ def _copy_to_history(
     table:         str,
     resource_id:   int,
     match_type:    str,
+    match_score:   float | None,
+    match_details: dict[str, Any] | None,
     kept_id:       int,
     other_id:      int,
     col_names:     list[str],
 ) -> None:
     """Nakopíruje jeden záznam do dedup_histoire pred zlúčením."""
     src_cols  = ", ".join(f'"{c}"' for c in col_names)
-    dedup_ext = ", dedup_merged_at, dedup_match_type, dedup_kept_resource_id, dedup_other_resource_id"
+    dedup_ext = ", dedup_merged_at, dedup_match_type, dedup_match_score, dedup_match_details, dedup_kept_resource_id, dedup_other_resource_id"
 
     with raw_conn.cursor() as cur:
         cur.execute(
             f"""
             INSERT INTO "{schema}"."dedup_histoire" ({src_cols}{dedup_ext})
-            SELECT {src_cols}, %s, %s, %s, %s
+            SELECT {src_cols}, %s, %s, %s, %s::jsonb, %s, %s
             FROM "{schema}"."{table}"
             WHERE resource_id = %s
             """,
-            (datetime.now(timezone.utc), match_type, kept_id, other_id, resource_id),
+            (
+                datetime.now(timezone.utc),
+                match_type,
+                match_score,
+                json.dumps(match_details or {}, ensure_ascii=False),
+                kept_id,
+                other_id,
+                resource_id,
+            ),
         )
+
+
+def _fetch_record_raw(raw_conn, schema: str, table: str, resource_id: int, col_names: list[str]) -> dict:
+    cols = ", ".join(f'"{c}"' for c in col_names)
+    with raw_conn.cursor() as cur:
+        cur.execute(f'SELECT {cols} FROM "{schema}"."{table}" WHERE resource_id = %s', (resource_id,))
+        row = cur.fetchone()
+        if not row:
+            return {}
+        return dict(zip(col_names, row))
+
+
+def _as_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple)):
+        return [str(v).strip() for v in value if v is not None and str(v).strip()]
+    text_value = str(value).strip()
+    if not text_value:
+        return []
+    return [part.strip() for part in re.split(r"\s*\|\|\s*", text_value) if part.strip()]
+
+
+def _merge_ordered_values(left: Any, right: Any) -> list[str]:
+    merged: list[str] = []
+    seen: set[str] = set()
+    for value in [*_as_list(left), *_as_list(right)]:
+        key = _normalize_text(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        merged.append(value)
+    return merged
+
+
+def _is_empty_value(value: Any) -> bool:
+    return not _as_list(value)
+
+
+def _build_merge_updates(kept: dict, deleted: dict, extra_updates: dict | None) -> dict:
+    updates: dict = {}
+    for col in _MERGE_UNION_COLUMNS:
+        if col not in kept or col not in deleted:
+            continue
+        merged = _merge_ordered_values(kept.get(col), deleted.get(col))
+        if merged != _as_list(kept.get(col)):
+            updates[col] = merged
+
+    for col in _MERGE_FILL_COLUMNS:
+        if col not in kept or col not in deleted:
+            continue
+        if _is_empty_value(kept.get(col)) and not _is_empty_value(deleted.get(col)):
+            updates[col] = deleted.get(col)
+
+    if extra_updates:
+        updates.update(extra_updates)
+    return updates
 
 
 def _get_column_names(engine: Engine, schema: str, table: str) -> list[str]:
@@ -461,6 +674,8 @@ def _merge_pair(
     kept_id:    int,
     deleted_id: int,
     match_type: str,
+    match_score: float | None,
+    match_details: dict[str, Any] | None,
     col_names:  list[str],
     extra_updates: dict | None = None,
 ) -> None:
@@ -468,15 +683,23 @@ def _merge_pair(
     Nakopíruje oba záznamy do histórie, potom UPDATE kept + DELETE deleted.
     extra_updates: {col_name: value} aplikované na kept_id po zlúčení.
     """
-    _copy_to_history(raw_conn, schema, table, kept_id,    match_type, kept_id, deleted_id, col_names)
-    _copy_to_history(raw_conn, schema, table, deleted_id, match_type, kept_id, deleted_id, col_names)
+    kept_record = _fetch_record_raw(raw_conn, schema, table, kept_id, col_names)
+    deleted_record = _fetch_record_raw(raw_conn, schema, table, deleted_id, col_names)
+    if not kept_record:
+        raise RuntimeError(f"Merge ciel {kept_id} uz neexistuje; merge {kept_id} <- {deleted_id} sa prerusil.")
+    if not deleted_record:
+        raise RuntimeError(f"Mazany zaznam {deleted_id} uz neexistuje; merge {kept_id} <- {deleted_id} sa prerusil.")
+    merged_updates = _build_merge_updates(kept_record, deleted_record, extra_updates)
 
-    if extra_updates:
-        set_parts = ", ".join(f'"{c}" = %s' for c in extra_updates)
+    _copy_to_history(raw_conn, schema, table, kept_id,    match_type, match_score, match_details, kept_id, deleted_id, col_names)
+    _copy_to_history(raw_conn, schema, table, deleted_id, match_type, match_score, match_details, kept_id, deleted_id, col_names)
+
+    if merged_updates:
+        set_parts = ", ".join(f'"{c}" = %s' for c in merged_updates)
         with raw_conn.cursor() as cur:
             cur.execute(
                 f'UPDATE "{schema}"."{table}" SET {set_parts} WHERE resource_id = %s',
-                (*extra_updates.values(), kept_id),
+                (*merged_updates.values(), kept_id),
             )
 
     with raw_conn.cursor() as cur:
@@ -526,6 +749,61 @@ def _write_duplicates_to_flags(
         raw.close()
 
 
+def _resolve_merge_target(resource_id: int, redirects: dict[int, int]) -> int:
+    current = resource_id
+    seen: set[int] = set()
+    while current in redirects and current not in seen:
+        seen.add(current)
+        current = redirects[current]
+    return current
+
+
+def _normalize_merge_pairs(
+    merge_pairs: list[tuple[int, int, str, float | None, dict[str, Any] | None, dict | None]],
+) -> list[tuple[int, int, str, float | None, dict[str, Any] | None, dict | None]]:
+    """
+    Usporiada merge akcie tak, aby sa reťazové duplicity zlúčili do aktuálneho živého parenta.
+
+    Príklad:
+      A <- B
+      B <- C
+    sa zmení na:
+      A <- B
+      A <- C
+    """
+    redirects: dict[int, int] = {}
+    normalized: list[tuple[int, int, str, float | None, dict[str, Any] | None, dict | None]] = []
+
+    for kept_id, deleted_id, match_type, match_score, match_details, extra in merge_pairs:
+        current_kept = _resolve_merge_target(kept_id, redirects)
+        current_deleted = _resolve_merge_target(deleted_id, redirects)
+
+        if current_kept == current_deleted:
+            continue
+
+        kept_redirected = kept_id != current_kept
+        deleted_redirected = deleted_id != current_deleted
+
+        if kept_redirected and not deleted_redirected:
+            final_kept, final_deleted = current_kept, current_deleted
+        elif deleted_redirected and not kept_redirected:
+            final_kept, final_deleted = current_deleted, current_kept
+        elif kept_redirected and deleted_redirected:
+            final_kept = min(current_kept, current_deleted)
+            final_deleted = max(current_kept, current_deleted)
+        else:
+            final_kept, final_deleted = current_kept, current_deleted
+
+        if final_kept == final_deleted:
+            continue
+
+        normalized.append((final_kept, final_deleted, match_type, match_score, match_details, extra))
+        redirects[deleted_id] = final_kept
+        redirects[current_deleted] = final_kept
+
+    return normalized
+
+
 # -----------------------------------------------------------------------
 # Hlavný runner
 # -----------------------------------------------------------------------
@@ -541,10 +819,11 @@ def run_deduplication(
     schema = settings.local_schema
     table  = settings.local_table
 
+    setup_dedup_table(engine)
     col_names = _get_column_names(engine, schema, table)
 
     flag_only:    dict[int, list[dict]] = defaultdict(list)  # autoplagiat, fuzzy
-    merge_pairs:  list[tuple[int, int, str, dict | None]] = []  # (kept, deleted, type, extra)
+    merge_pairs:  list[tuple[int, int, str, float | None, dict[str, Any] | None, dict | None]] = []  # (kept, deleted, type, score, details, extra)
     already_deleted: set[int] = set()
 
     # --- Fáza 1: Presná zhoda podľa DOI ---
@@ -552,12 +831,12 @@ def run_deduplication(
     exact_groups = find_duplicates_by_column(engine, by_column=by_column)
     exact_pairs  = sum(len(ids) * (len(ids) - 1) // 2 for ids, *_ in exact_groups)
 
-    for ids, col, matched_val, score in exact_groups:
+    for ids, col, matched_val, score, details in exact_groups:
         kept_id = min(ids)  # najnižší resource_id je kanonický
         for deleted_id in ids:
             if deleted_id == kept_id:
                 continue
-            merge_pairs.append((kept_id, deleted_id, f"exact:{col}", None))
+            merge_pairs.append((kept_id, deleted_id, f"exact:{col}", score, details, None))
 
     print(f"  Skupiny: {len(exact_groups):4d} | Páry: {exact_pairs:6d}")
 
@@ -591,7 +870,7 @@ def run_deduplication(
                 if val:
                     extra[col] = val
 
-            merge_pairs.append((kept_id, deleted_id, match_type, extra if extra else None))
+            merge_pairs.append((kept_id, deleted_id, match_type, score, details, extra if extra else None))
 
         elif match_type in ("merged_type", "exact:content"):
             # Pre merged_type: uprednostni "article" typ
@@ -608,7 +887,7 @@ def run_deduplication(
                 kept_id    = min(id_a, id_b)
                 deleted_id = max(id_a, id_b)
                 extra = None
-            merge_pairs.append((kept_id, deleted_id, match_type, extra))
+            merge_pairs.append((kept_id, deleted_id, match_type, score, details, extra))
 
     for mtype, cnt in sorted(content_counts.items()):
         print(f"  {mtype:20s}: {cnt:4d}")
@@ -626,6 +905,7 @@ def run_deduplication(
 
         print(f"  Fuzzy páry: {fuzzy_count:6d}")
 
+    merge_pairs = _normalize_merge_pairs(merge_pairs)
     total_merge = len(merge_pairs)
     total_flag  = len(flag_only)
     print(f"[INFO] Na zlúčenie: {total_merge} | Len flag: {total_flag} záznamov")
@@ -633,11 +913,15 @@ def run_deduplication(
     if dry_run:
         print("[DRY RUN] Žiadne zmeny v DB.")
         print("  Ukážka zlúčení (prvých 5):")
-        for kept, deleted, mtype, extra in merge_pairs[:5]:
-            print(f"    KEEP {kept} / DELETE {deleted} [{mtype}]" + (f" extra={list(extra)}" if extra else ""))
+        for kept, deleted, mtype, score, details, extra in merge_pairs[:5]:
+            print(
+                f"    KEEP {kept} / DELETE {deleted} [{mtype}]"
+                + (f" score={score:.4f}" if score is not None else "")
+                + (f" extra={list(extra)}" if extra else "")
+            )
         print("  Ukážka flagov (prvých 5):")
         for rid, dups in list(flag_only.items())[:5]:
-            print(f"    resource_id={rid} → {[d['match_type'] for d in dups]}")
+            print(f"    resource_id={rid} -> {[d['match_type'] for d in dups]}")
         return
 
     # --- Zápis ---
@@ -647,11 +931,11 @@ def run_deduplication(
         skipped = 0
         executed = 0
         try:
-            for kept_id, deleted_id, match_type, extra in merge_pairs:
+            for kept_id, deleted_id, match_type, match_score, match_details, extra in merge_pairs:
                 if deleted_id in already_deleted:
                     skipped += 1
                     continue
-                _merge_pair(raw, schema, table, kept_id, deleted_id, match_type, col_names, extra)
+                _merge_pair(raw, schema, table, kept_id, deleted_id, match_type, match_score, match_details, col_names, extra)
                 already_deleted.add(deleted_id)
                 executed += 1
             raw.commit()

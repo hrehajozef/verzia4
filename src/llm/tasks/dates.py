@@ -28,6 +28,14 @@ DATE_LLM_VERSION = "1.0.0"
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
+def _to_iso_value(value: Any) -> str:
+    if value is None:
+        return ""
+    if hasattr(value, "isoformat"):
+        return value.isoformat()
+    return str(value).strip()
+
+
 class DateLLMResult(BaseModel):
     """Výstupná štruktúra LLM odpovede pre dátumy.
 
@@ -119,7 +127,7 @@ Zo surového textu metadát urči kedy bol článok:
 1. Výstup je VÝHRADNE JSON objekt so 5 kľúčmi: received, reviewed, accepted, published_online, published.
 2. Každá hodnota je ISO dátum vo formáte YYYY-MM-DD alebo prázdny reťazec "" ak dátum nie je dostupný.
 3. Ak je dostupný iba mesiac a rok, použi prvý deň mesiaca (napr. "2019-03-01").
-4. Ak je dostupný iba rok, použi "YYYY-01-01".
+4. Ak je dostupný iba rok, nepouži žiadny odhadovaný deň ani mesiac. Vráť "".
 5. Extrahuj dátumy PRESNE tak ako sú uvedené v texte. Ak text obsahuje dátumy
    v nesprávnom chronologickom poradí (received > accepted), extrahuj ich aj tak – neupravuj ich.
 6. Rok musí byť v rozsahu 1990–2035. Ak rok nespadá do rozsahu, použi "".
@@ -165,19 +173,52 @@ DATES_SETUP_PREAMBLE: list[dict] = [
 # -----------------------------------------------------------------------
 
 def build_date_user_message(
-    resource_id:    int,
-    raw_date_text:  str,
-    dc_issued:      str | None,
-    date_flags:     dict[str, Any] | None,
+    resource_id: int,
+    raw_date_text: str,
+    dc_issued: str | None,
+    date_flags: dict[str, Any] | None,
+    *,
+    title: str | None = None,
+    doi: str | None = None,
+    journal: str | None = None,
+    publisher: str | None = None,
+    dc_available: str | None = None,
+    dc_accessioned: str | None = None,
+    event_start: str | None = None,
+    event_end: str | None = None,
+    existing_dates: dict[str, str | None] | None = None,
 ) -> str:
     """Zostaví user message pre LLM parsovanie dátumov."""
     flags = date_flags or {}
     parts: list[str] = [f"=== Záznam resource_id={resource_id} ==="]
 
+    if title:
+        parts.append(f"Názov publikácie:\n{title}")
+    if doi:
+        parts.append(f"DOI:\n{doi}")
+    if journal:
+        parts.append(f"Časopis / zdroj:\n{journal}")
+    if publisher:
+        parts.append(f"Vydavateľ:\n{publisher}")
     parts.append(f"Surový text dátumov:\n{raw_date_text}")
 
     if dc_issued:
         parts.append(f"dc.date.issued (rok vydania z katalógu): {dc_issued}")
+    if dc_available:
+        parts.append(f"dc.date.available: {dc_available}")
+    if dc_accessioned:
+        parts.append(f"dc.date.accessioned: {dc_accessioned}")
+    if event_start:
+        parts.append(f"dc.event.sdate: {event_start}")
+    if event_end:
+        parts.append(f"dc.event.edate: {event_end}")
+    if existing_dates:
+        filtered_existing = {k: v for k, v in existing_dates.items() if v}
+        if filtered_existing:
+            parts.append(
+                "Aktuálne uložené / navrhnuté dátumy:\n"
+                + json.dumps(filtered_existing, ensure_ascii=False, indent=2)
+            )
 
     # Ostatné problémy heuristiky (bez MDR – tie riešime osobitne nižšie)
     _HEURISTIC_KEYS = (
@@ -240,16 +281,40 @@ def build_date_user_message(
     return "\n\n".join(parts)
 
 
+def _sanitize_year_only_llm_result(
+    llm_result: DateLLMResult,
+    date_flags: dict[str, Any] | None,
+) -> DateLLMResult:
+    flags = date_flags or {}
+    if "year_only_dates" not in flags:
+        return llm_result
+    payload = llm_result.model_dump()
+    for key, value in payload.items():
+        if re.fullmatch(r"\d{4}-01-01", value or ""):
+            payload[key] = ""
+    return DateLLMResult(**payload)
+
+
 # -----------------------------------------------------------------------
 # Spracovanie jedného záznamu
 # -----------------------------------------------------------------------
 
 def process_date_llm_record(
-    resource_id:   int,
+    resource_id: int,
     raw_date_text: str,
-    dc_issued:     str | None,
-    date_flags:    dict | None,
-    session:       LLMSession,
+    dc_issued: str | None,
+    date_flags: dict | None,
+    session: LLMSession,
+    *,
+    title: str | None = None,
+    doi: str | None = None,
+    journal: str | None = None,
+    publisher: str | None = None,
+    dc_available: str | None = None,
+    dc_accessioned: str | None = None,
+    event_start: str | None = None,
+    event_end: str | None = None,
+    existing_dates: dict[str, str | None] | None = None,
 ) -> dict:
 
     result: dict = {
@@ -265,10 +330,19 @@ def process_date_llm_record(
     }
 
     user_msg = build_date_user_message(
-        resource_id   = resource_id,
-        raw_date_text = raw_date_text,
-        dc_issued     = dc_issued,
-        date_flags    = date_flags or {},
+        resource_id=resource_id,
+        raw_date_text=raw_date_text,
+        dc_issued=dc_issued,
+        date_flags=date_flags or {},
+        title=title,
+        doi=doi,
+        journal=journal,
+        publisher=publisher,
+        dc_available=dc_available,
+        dc_accessioned=dc_accessioned,
+        event_start=event_start,
+        event_end=event_end,
+        existing_dates=existing_dates,
     )
 
     raw_output = ""
@@ -279,6 +353,7 @@ def process_date_llm_record(
             raw_output  = session.ask(user_msg)
             parsed_dict = parse_llm_json_output(raw_output)
             llm_result  = DateLLMResult(**parsed_dict)
+            llm_result  = _sanitize_year_only_llm_result(llm_result, date_flags)
 
             result.update({
                 "date_llm_status":  "processed",
@@ -346,21 +421,27 @@ def run_date_llm(
 
     dash_filter = "" if include_dash else "AND (m.\"utb.fulltext.dates\"[1] IS NULL OR m.\"utb.fulltext.dates\"[1] != '{-}')"
 
+    # Nazbieraj všetky ID vopred – aby sa zmenený status po spracovaní
+    # neprekrýval s filtrom a nezapríčinil nekonečnú slučku.
     with engine.connect() as conn:
-        total = conn.execute(
+        id_rows = conn.execute(
             text(f"""
-                SELECT COUNT(*)
+                SELECT q.resource_id
                 FROM "{schema}"."{queue}" q
                 JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id
                 WHERE q.date_needs_llm = TRUE
                   AND q.date_llm_status = ANY(:s)
                   {dash_filter}
+                ORDER BY q.resource_id
             """),
             {"s": statuses},
-        ).scalar_one()
+        ).fetchall()
 
+    all_ids: list[int] = [r[0] for r in id_rows]
     if limit > 0:
-        total = min(total, limit)
+        all_ids = all_ids[:limit]
+
+    total = len(all_ids)
     if total == 0:
         print("[INFO] Žiadne záznamy na LLM spracovanie dátumov.")
         return
@@ -371,8 +452,7 @@ def run_date_llm(
     started   = time.time()
 
     while processed < total:
-        batch = min(batch_size, total - processed)
-
+        batch_ids = all_ids[processed: processed + batch_size]
         with engine.connect() as conn:
             rows = conn.execute(
                 text(f"""
@@ -380,31 +460,66 @@ def run_date_llm(
                         q.resource_id,
                         m."utb.fulltext.dates"[1] AS fulltext_dates,
                         m."dc.date.issued"[1]     AS dc_issued,
+                        m."dc.title"[1]           AS title,
+                        m."dc.identifier.doi"[1]  AS doi,
+                        m."dc.relation.ispartof"[1] AS journal,
+                        m."dc.publisher"[1]       AS publisher,
+                        m."dc.date.available"[1]  AS dc_available,
+                        m."dc.date.accessioned"[1] AS dc_accessioned,
+                        m."dc.event.sdate"[1]     AS event_start,
+                        m."dc.event.edate"[1]     AS event_end,
+                        q.utb_date_received,
+                        q.utb_date_reviewed,
+                        q.utb_date_accepted,
+                        q.utb_date_published_online,
+                        q.utb_date_published,
                         q.date_flags
                     FROM "{schema}"."{queue}" q
                     JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id
-                    WHERE q.date_needs_llm = TRUE
-                      AND q.date_llm_status = ANY(:s)
-                      {dash_filter}
+                    WHERE q.resource_id = ANY(:ids)
                     ORDER BY q.resource_id
-                    LIMIT :lim
                 """),
-                {"s": statuses, "lim": batch},
+                {"ids": batch_ids},
             ).fetchall()
 
         if not rows:
             break
 
-        updates = [
-            process_date_llm_record(
-                resource_id   = row.resource_id,
-                raw_date_text = row.fulltext_dates or "",
-                dc_issued     = row.dc_issued,
-                date_flags    = row.date_flags or {},
-                session       = session,
+        updates = []
+        for row in rows:
+            u = process_date_llm_record(
+                resource_id=row.resource_id,
+                raw_date_text=row.fulltext_dates or "",
+                dc_issued=row.dc_issued,
+                date_flags=row.date_flags or {},
+                session=session,
+                title=row.title,
+                doi=row.doi,
+                journal=row.journal,
+                publisher=row.publisher,
+                dc_available=row.dc_available,
+                dc_accessioned=row.dc_accessioned,
+                event_start=row.event_start,
+                event_end=row.event_end,
+                existing_dates={
+                    "utb_date_received": _to_iso_value(row.utb_date_received),
+                    "utb_date_reviewed": _to_iso_value(row.utb_date_reviewed),
+                    "utb_date_accepted": _to_iso_value(row.utb_date_accepted),
+                    "utb_date_published_online": _to_iso_value(row.utb_date_published_online),
+                    "utb_date_published": _to_iso_value(row.utb_date_published),
+                },
             )
-            for row in rows
-        ]
+            updates.append(u)
+            status = u["date_llm_status"]
+            if status == "processed":
+                dates = {k: u[k] for k in ("received", "reviewed", "accepted", "published_online", "published") if u.get(k)}
+                print(f"  [ID {row.resource_id}] OK  datumy: {dates}")
+            else:
+                err = (u.get("date_llm_result") or {}).get("error", "")
+                raw = (u.get("date_llm_result") or {}).get("raw", "")
+                print(f"  [ID {row.resource_id}] {status}  chyba: {err}")
+                if raw:
+                    print(f"    raw: {raw[:300]}")
         errors += sum(1 for u in updates if u["date_llm_status"] != "processed")
 
         update_sql = f"""

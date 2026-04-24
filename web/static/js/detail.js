@@ -14,6 +14,58 @@ function escHtml(str) {
     .replace(/"/g, "&quot;");
 }
 
+const VALUE_SEPARATOR_RE = /\s*\|\|\s*/;
+
+function splitValues(value) {
+  return (value || "")
+    .split(/\n|\s*\|\|\s*/)
+    .map((s) => s.trim())
+    .filter(Boolean);
+}
+
+function normalizeStoredValue(value) {
+  const raw = (value || "").trim();
+  if (!raw) return "";
+  if (!raw.includes("||") && !raw.includes("\n")) return raw;
+  return splitValues(raw).join("||");
+}
+
+function valueForDisplay(value) {
+  const parts = splitValues(value);
+  return parts.length > 1 ? parts.join("\n") : (value || "");
+}
+
+function valueForEdit(value) {
+  return normalizeStoredValue(value || "");
+}
+
+function htmlWithBreaks(value, className) {
+  const parts = splitValues(value);
+  if (!parts.length) return '<span class="text-muted">—</span>';
+  if (parts.length === 1) {
+    const cls = className ? ` class="${className}"` : "";
+    return `<span${cls}>${escHtml(parts[0])}</span>`;
+  }
+  const cls = className ? ` ${className}` : "";
+  return `<div class="multi-value-list${cls}">` +
+    parts.map((part) => `<div>${escHtml(part)}</div>`).join("") +
+    "</div>";
+}
+
+function diffHtml(original, proposed) {
+  const left = valueForDisplay(original);
+  const right = valueForDisplay(proposed);
+  if (!dmp || left === right) return htmlWithBreaks(proposed || original);
+  const diffs = dmp.diff_main(left, right);
+  dmp.diff_cleanupSemantic(diffs);
+  return diffs.map(([type, text]) => {
+    const esc = escHtml(text).replace(/\n/g, "<br>");
+    if (type === 1) return `<span class="diff-insert">${esc}</span>`;
+    if (type === -1) return `<span class="diff-delete">${esc}</span>`;
+    return esc;
+  }).join("");
+}
+
 // ── 1. Zasúvací panel autorov ────────────────────────────────────────────────
 
 (function initPanel() {
@@ -136,6 +188,20 @@ function updateSaveButton() {
   });
 }
 
+function setApproveButtonsBusy(isBusy, label) {
+  ["approve-btn-top", "approve-btn-bottom"].forEach((id) => {
+    const btn = document.getElementById(id);
+    if (!btn) return;
+    btn.disabled = isBusy;
+    if (isBusy) {
+      btn.dataset.originalLabel = btn.dataset.originalLabel || btn.innerHTML;
+      btn.innerHTML = label || "Schvaľujem…";
+    } else if (btn.dataset.originalLabel) {
+      btn.innerHTML = btn.dataset.originalLabel;
+    }
+  });
+}
+
 function trackChange(fieldKey, newVal, origVal) {
   if (!fieldKey) return;
   const empty     = !newVal || newVal === "—";
@@ -155,6 +221,33 @@ function renderRepozitarCell(td) {
   const original = td.dataset.original || "";
   const proposed = td.dataset.proposed || "";
   const modified = changes[td.dataset.field];
+  const currentValue = modified !== undefined ? modified : (proposed || original || "");
+
+  if (td.dataset.field === "dc.contributor.author" && modified === undefined) {
+    td.classList.remove("cell-modified");
+    td.innerHTML = htmlWithBreaks(currentValue);
+    return;
+  }
+
+  if (td.dataset.field === "utb.contributor.internalauthor" && modified === undefined) {
+    td.classList.remove("cell-modified");
+    const authorsCell = document.querySelector('td[data-col-type="repozitar"][data-field="dc.contributor.author"]');
+    const authorsValue = authorsCell
+      ? (changes["dc.contributor.author"] !== undefined
+          ? changes["dc.contributor.author"]
+          : (authorsCell.dataset.proposed || authorsCell.dataset.original || ""))
+      : "";
+    if (authorsValue && normalizeStoredValue(authorsValue) !== normalizeStoredValue(currentValue)) {
+      td.innerHTML = diffHtml(authorsValue, currentValue);
+      if (proposed && normalizeStoredValue(original) !== normalizeStoredValue(proposed)) {
+        td.innerHTML +=
+          ` <button class="fix-badge ms-1" onclick="window.acceptFix(this.closest('td'))" title="Prijať návrh">✓ opraviť</button>`;
+      }
+    } else {
+      td.innerHTML = htmlWithBreaks(currentValue);
+    }
+    return;
+  }
 
   if (modified !== undefined) {
     td.innerHTML =
@@ -379,7 +472,7 @@ function initRepozitarCells() {
       const val =
         changes[td.dataset.field] !== undefined
           ? changes[td.dataset.field]
-          : (td.dataset.proposed || td.dataset.original || "");
+          : valueForEdit(td.dataset.proposed || td.dataset.original || "");
 
       td.contentEditable = "true";
       td.textContent = val;
@@ -430,16 +523,23 @@ function initSourceCells() {
     const fieldKey = td.dataset.field || "";
 
     td.addEventListener("focus", () => {
-      if (td.textContent.trim() === "—") td.textContent = "";
+      td.dataset.editing = "true";
+      const raw = changes[fieldKey] !== undefined
+        ? changes[fieldKey]
+        : valueForEdit(td.dataset.original || "");
+      td.textContent = raw;
     });
 
     td.addEventListener("blur", () => {
+      td.dataset.editing = "false";
       const newVal  = td.textContent.trim();
       const origVal = td.dataset.original || "";
       if (!newVal) td.innerHTML = '<span class="text-muted">—</span>';
       if (fieldKey) {
         trackChange(fieldKey, newVal, origVal);
+        td.dataset.currentRaw = changes[fieldKey] !== undefined ? changes[fieldKey] : normalizeStoredValue(newVal);
         td.classList.toggle("cell-modified", changes[fieldKey] !== undefined);
+        renderSourceCellDisplay(td);
       }
     });
 
@@ -511,6 +611,61 @@ window.saveAllChanges = async function () {
   }
 };
 
+window.approveRecord = async function () {
+  const active = document.activeElement;
+  if (active && active.isContentEditable) {
+    active.blur();
+  }
+
+  await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+  const approveMsg = document.getElementById("approve-msg");
+  const payload = { fields: Object.fromEntries(Object.entries(changes)) };
+
+  const btn = document.getElementById("save-all-btn");
+  const btnBot = document.getElementById("save-all-btn-bottom");
+  if (btn) btn.disabled = true;
+  if (btnBot) btnBot.disabled = true;
+  setApproveButtonsBusy(true, "Schvaľujem…");
+
+  try {
+    const resp = await fetch(`/record/${window.RESOURCE_ID}/approve`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(payload),
+    });
+    const data = await resp.json();
+
+    if (!resp.ok || !data.ok) {
+      const errs = data.errors
+        ? Object.entries(data.errors).map(([k, v]) => `${k}: ${v}`).join("\n")
+        : (data.error || `HTTP ${resp.status}`);
+      throw new Error(errs);
+    }
+
+    Object.keys(changes).forEach((k) => delete changes[k]);
+    document.querySelectorAll(".cell-modified").forEach((el) => el.classList.remove("cell-modified"));
+    updateSaveButton();
+    if (approveMsg) {
+      approveMsg.innerHTML = '<div class="alert alert-success">Záznam schválený.</div>';
+    }
+    window.setTimeout(() => {
+      window.location = data.redirect || "/";
+    }, 400);
+  } catch (err) {
+    if (approveMsg) {
+      approveMsg.innerHTML = `<div class="alert alert-danger">Chyba pri schválení: ${escHtml(err.message || String(err))}</div>`;
+    } else {
+      alert("Chyba pri schválení:\n" + (err.message || String(err)));
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+    if (btnBot) btnBot.disabled = false;
+    setApproveButtonsBusy(false);
+    updateSaveButton();
+  }
+};
+
 // ── Crossref – inline plnenie tabuľky ────────────────────────────────────────
 
 function initSaveShortcut() {
@@ -551,7 +706,7 @@ async function loadCrossref() {
     if (data.by_field) {
       Object.entries(data.by_field).forEach(([fieldKey, value]) => {
         const cfCell = document.querySelector(`td[data-cf-field="${CSS.escape(fieldKey)}"]`);
-        if (cfCell) { cfCell.textContent = value; cfCell.classList.remove("text-muted"); }
+        if (cfCell) renderCrossrefCell(cfCell, value);
       });
     }
 
@@ -582,8 +737,156 @@ async function loadCrossref() {
 
 // ── Inicializácia po načítaní DOM ─────────────────────────────────────────────
 
+// Current rendering overrides. Kept near the end so older declarations above cannot win.
+function trackChange(fieldKey, newVal, origVal) {
+  if (!fieldKey) return;
+  const normalizedNew = normalizeStoredValue(newVal);
+  const normalizedOrig = normalizeStoredValue(origVal);
+  const empty = !normalizedNew || normalizedNew === "—";
+  const origEmpty = !normalizedOrig;
+  if ((empty && origEmpty) || normalizedNew === normalizedOrig) {
+    delete changes[fieldKey];
+  } else {
+    changes[fieldKey] = empty ? "" : normalizedNew;
+  }
+  updateSaveButton();
+}
+
+function renderRepozitarCell(td) {
+  if (!td) return;
+  const original = td.dataset.original || "";
+  const proposed = td.dataset.proposed || "";
+  const modified = changes[td.dataset.field];
+
+  if (td.dataset.field === "utb.contributor.internalauthor" && modified === undefined) {
+    td.classList.remove("cell-modified");
+    td.innerHTML = htmlWithBreaks(proposed || original);
+    return;
+  }
+
+  if (modified !== undefined) {
+    td.innerHTML =
+      `<span class="badge bg-warning text-dark me-1" style="font-size:.65rem">upravené</span>` +
+      htmlWithBreaks(modified);
+    td.classList.add("cell-modified");
+  } else {
+    td.classList.remove("cell-modified");
+    if (!original && !proposed) {
+      td.innerHTML = '<span class="text-muted">—</span>';
+    } else if (original && proposed && normalizeStoredValue(original) !== normalizeStoredValue(proposed)) {
+      td.innerHTML = diffHtml(original, proposed) +
+        ` <button class="fix-badge ms-1" onclick="window.acceptFix(this.closest('td'))" title="Prijať návrh">✓ opraviť</button>`;
+    } else if (proposed && !original) {
+      td.innerHTML = htmlWithBreaks(proposed, "proposed-add") +
+        ` <button class="fix-badge ms-1" onclick="window.acceptFix(this.closest('td'))" title="Prijať návrh">✓ použiť</button>`;
+    } else {
+      td.innerHTML = htmlWithBreaks(original);
+    }
+  }
+
+  _addFieldPicker(td);
+}
+
+function _appendFieldValue(td, value) {
+  const fieldKey = td.dataset.field;
+  const base = changes[fieldKey] !== undefined ? changes[fieldKey] : (td.dataset.original || "");
+  const parts = splitValues(base);
+  if (fieldKey === "utb.faculty" || fieldKey === "utb.ou") {
+    parts.push(value);
+  } else if (!parts.includes(value)) {
+    parts.push(value);
+  }
+  changes[fieldKey] = parts.join("||");
+  updateSaveButton();
+  renderRepozitarCell(td);
+}
+
+function renderSourceCellDisplay(td) {
+  if (!td || td.dataset.editing === "true") return;
+  const raw = td.dataset.currentRaw || td.dataset.original || "";
+  if (!raw) {
+    td.innerHTML = '<span class="text-muted">—</span>';
+    return;
+  }
+  const row = td.closest("tr");
+  const rowKey = row ? row.dataset.fieldKey : "";
+  if (rowKey === "dc.contributor.author") {
+    const repoCell = row ? row.querySelector('td[data-col-type="repozitar"]') : null;
+    const repoValue = repoCell
+      ? (changes[repoCell.dataset.field] !== undefined
+          ? changes[repoCell.dataset.field]
+          : (repoCell.dataset.proposed || repoCell.dataset.original || ""))
+      : "";
+    if (repoValue && normalizeStoredValue(repoValue) !== normalizeStoredValue(raw)) {
+      td.innerHTML = diffHtml(raw, repoValue);
+      return;
+    }
+  }
+  td.innerHTML = htmlWithBreaks(raw);
+}
+
+function renderCrossrefCell(cfCell, value) {
+  if (!cfCell) return;
+  const row = cfCell.closest("tr");
+  const repoCell = row ? row.querySelector('td[data-col-type="repozitar"]') : null;
+  const repoValue = repoCell
+    ? (changes[repoCell.dataset.field] !== undefined
+        ? changes[repoCell.dataset.field]
+        : (repoCell.dataset.proposed || repoCell.dataset.original || ""))
+    : "";
+  cfCell.dataset.crossrefValue = value || "";
+  cfCell.classList.remove("text-muted");
+  if (row && value) {
+    row.classList.remove("null-row");
+  }
+  if (repoValue && value && normalizeStoredValue(repoValue) !== normalizeStoredValue(value)) {
+    cfCell.innerHTML = diffHtml(repoValue, value);
+  } else {
+    cfCell.innerHTML = htmlWithBreaks(value);
+  }
+}
+
+function _showAuthorMenu(anchorEl, displayName) {
+  _closeAuthorMenu();
+
+  const rect = anchorEl.getBoundingClientRect();
+  const menu = document.createElement("div");
+  menu.id = "_author-ctx-menu";
+  menu.style.cssText = [
+    "position:fixed",
+    `top:${rect.bottom + 3}px`,
+    `right:${window.innerWidth - rect.right}px`,
+    "z-index:9999",
+    "background:#fff",
+    "border:1px solid #dee2e6",
+    "border-radius:5px",
+    "box-shadow:0 4px 12px rgba(0,0,0,.15)",
+    "min-width:200px",
+    "padding:10px",
+    "font-size:0.82rem",
+  ].join(";");
+
+  const addBtn = document.createElement("button");
+  addBtn.type = "button";
+  addBtn.className = "dropdown-item";
+  addBtn.textContent = "Pridať k interným autorom";
+  addBtn.addEventListener("click", (e) => {
+    e.stopPropagation();
+    _closeAuthorMenu();
+    window.addAuthorToInternalList(displayName);
+  });
+  menu.appendChild(addBtn);
+  document.body.appendChild(menu);
+
+  const menuRect = menu.getBoundingClientRect();
+  if (menuRect.bottom > window.innerHeight - 8) {
+    menu.style.top = `${rect.top - menuRect.height - 3}px`;
+  }
+}
+
 document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("td[data-col-type='repozitar']").forEach(renderRepozitarCell);
+  document.querySelectorAll("td[data-col-type='wos'], td[data-col-type='scopus']").forEach(renderSourceCellDisplay);
   initRepozitarCells();
   initSourceCells();
   initSaveShortcut();

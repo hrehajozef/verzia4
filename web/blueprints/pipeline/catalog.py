@@ -1,155 +1,142 @@
-"""Katalog CLI prikazov pre stranku Pipeline."""
+"""Catalog of CLI commands exposed on the Pipeline settings page."""
 
 from __future__ import annotations
 
 
 PIPELINE_STEPS: tuple[dict, ...] = (
     {
-        "title": "1. Inicializacia dat",
-        "body": "Bootstrap skopiruje remote tabulku do lokalnej databazy. Potom sa importuje register internych autorov a vytvori sa medzitabuka utb_processing_queue, do ktorej zapisuje web aj pipeline.",
+        "title": "1. Inicializácia dát",
+        "body": "Skopíruje sa remote tabuľka do lokálnej DB a pripraví sa pracovný queue, do ktorého zapisuje pipeline aj web.",
     },
     {
-        "title": "2. Validacia a opravy metadat",
-        "body": "Validacia hlada formatovacie chyby, mojibake, DOI/URL problemy a neplatne OBDID. Navrhy oprav sa daju najprv skontrolovat cez preview a potom aplikovat do skutocnych hodnot.",
+        "title": "2. Validácia metadát",
+        "body": "Skontrolujú sa formátovacie chyby, DOI/URL problémy, encoding a ďalšie pravidlá. Návrhy opráv sa dajú aplikovať samostatným krokom.",
     },
     {
-        "title": "3. Autori a afiliacie",
-        "body": "Heuristiky vyhodnotia WoS/DC autorov oproti internemu registru UTB, doplnia fakulty a organizacne jednotky a nejasne pripady oznacia pre LLM fallback.",
+        "title": "3. Autori a afiliácie",
+        "body": "Detegujú sa interní UTB autori, fakulty a ústavy. Neisté prípady môže po heuristike doriešiť LLM fallback.",
     },
     {
-        "title": "4. Datumy",
-        "body": "Datumova cast parsuje utb_fulltext_dates, riesi nejednoznacne DMY/MDY formaty a problematicke zaznamy posiela do LLM spracovania.",
+        "title": "4. Dátumy",
+        "body": "Z fulltextových dátumov sa extrahujú received/reviewed/accepted/published hodnoty. LLM fallback rieši nejednoznačné prípady.",
     },
     {
-        "title": "5. Zurnaly a vydavatelia",
-        "body": "Journal lookup hlada kanonicke publisher/ispartof hodnoty cez ISSN/ISBN zdroje alebo existujuce zaznamy. Apply krok navrhy zobrazi a po schvaleni zapise.",
+        "title": "5. Žurnály a vydavatelia",
+        "body": "Dopĺňa sa kanonický publisher a journal cez DOI/ISSN/ISBN zdroje a existujúce záznamy.",
     },
     {
-        "title": "6. Deduplikacia a kontrolne vystupy",
-        "body": "Deduplikacia hlada presne, obsahove a fuzzy zhody. Zluctelne duplicity fyzicky merguje s historiou, rizikove pripady len flaguje na kontrolu.",
+        "title": "6. Deduplikácia",
+        "body": "Presné, obsahové a fuzzy zhody sa buď zlúčia s históriou, alebo iba označia na kontrolu.",
+    },
+)
+
+
+EXTERNAL_SCHEDULER_GUIDE: tuple[dict, ...] = (
+    {
+        "title": "Windows Task Scheduler",
+        "body": "Vytvor úlohu, ktorá spustí PowerShell v koreni projektu. Príkaz uprav podľa kroku pipeline.",
+        "code": (
+            'powershell.exe -NoProfile -ExecutionPolicy Bypass -Command '
+            '"cd C:\\Users\\jozef\\School\\diplomovka\\git_repo\\verzia4; '
+            'uv run python -m src.cli detect-authors"'
+        ),
+    },
+    {
+        "title": "Linux cron",
+        "body": "Do crontabu pridaj riadok s časom a príkazom v koreni projektu.",
+        "code": (
+            "0 2 * * * cd /path/to/verzia4 && "
+            "uv run python -m src.cli detect-authors >> logs/pipeline.log 2>&1"
+        ),
     },
 )
 
 
 PIPELINE_SECTIONS: tuple[dict, ...] = (
     {
-        "title": "Inicializacia",
+        "title": "Inicializácia",
         "commands": (
             {
-                "name": "bootstrap",
-                "description": "Skopiruje remote tabulku do lokalnej DB.",
-                "help": "Prvy krok pipeline. Bez volieb je idempotentny; s --drop zmaze lokalnu tabulku a vytvori ju znova.",
-                "badge": "zaklad",
+                "name": "bootstrap-local-db",
+                "description": "Skopíruje remote metadata tabuľku do lokálnej DB.",
+                "help": "Prvý krok pipeline. Bez volieb ponechá existujúcu lokálnu tabuľku; s --drop ju zmaže a naplní znova.",
+                "badge": "základ",
                 "options": (
-                    {
-                        "name": "drop",
-                        "flag": "--drop",
-                        "type": "bool",
-                        "label": "--drop",
-                        "help": "Zmaze existujucu lokalnu tabulku a znovu ju naplni z remote DB.",
-                    },
+                    {"name": "drop", "flag": "--drop", "type": "bool", "label": "--drop", "help": "Zmaže existujúcu lokálnu tabuľku a znovu ju naplní z remote DB."},
                 ),
             },
             {
-                "name": "import-authors",
-                "description": "Nahra register internych UTB autorov z CSV.",
-                "help": "Vytvori alebo obnovi tabulku utb_internal_authors a importuje mena z CSV suboru.",
-                "options": (
-                    {
-                        "name": "csv",
-                        "flag": "--csv",
-                        "type": "text",
-                        "label": "--csv",
-                        "default": "data/autori_utb_oficial_utf8.csv",
-                        "help": "Cesta k CSV suboru vo formate priezvisko;krstne_meno.",
-                    },
-                ),
-            },
-            {
-                "name": "queue-setup",
-                "description": "Vytvori medzitabulku utb_processing_queue.",
-                "help": "Spusta sa po bootstrape. Je bezpecny na opakovane spustenie a pripravi tabulku, s ktorou pracuje webove UI.",
+                "name": "setup-processing-queue",
+                "description": "Pripraví pracovný queue a pomocné tabuľky.",
+                "help": "Vytvorí alebo zosúladí utb_processing_queue, stĺpce pre validáciu, autorov, dátumy, žurnály a zásobník zmien.",
                 "badge": "raz",
                 "options": (),
             },
         ),
     },
     {
-        "title": "Validacia",
+        "title": "Validácia",
         "commands": (
             {
-                "name": "validate-setup",
-                "description": "Prida validation_* stlpce.",
-                "help": "Jednorazova priprava stlpcov pre validaciu. Prikaz je idempotentny.",
-                "badge": "raz",
-                "options": (),
-            },
-            {
-                "name": "validate",
-                "description": "Skontroluje kvalitu metadat a ulozi navrhy oprav.",
-                "help": "Kontroluje whitespace, encoding, DOI, URL, OBDID a dalsie problemy. Vysledky zapisuje do validation_status, validation_flags a validation_suggested_fixes.",
+                "name": "validate-metadata",
+                "description": "Skontroluje kvalitu metadát a uloží návrhy opráv.",
+                "help": "Kontroluje whitespace, encoding, DOI, URL, OBDID a ďalšie problémy. Výsledky zapisuje do validation_* stĺpcov.",
                 "options": (
-                    {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximalny pocet zaznamov. 0 znamena vsetky."},
-                    {"name": "batch_size", "flag": "--batch-size", "type": "int", "label": "--batch-size", "default": 500, "help": "Velkost davky pri spracovani."},
-                    {"name": "revalidate", "flag": "--revalidate", "type": "bool", "label": "--revalidate", "help": "Znovu skontroluje aj zaznamy, ktore uz maju vysledok validacie."},
+                    {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximálny počet záznamov. 0 znamená všetky."},
+                    {"name": "batch_size", "flag": "--batch-size", "type": "int", "label": "--batch-size", "default": 500, "help": "Veľkosť dávky pri spracovaní."},
+                    {"name": "revalidate", "flag": "--revalidate", "type": "bool", "label": "--revalidate", "help": "Znovu skontroluje aj záznamy, ktoré už majú výsledok validácie."},
                 ),
             },
             {
-                "name": "apply-fixes",
-                "description": "Aplikuje navrhnute opravy z validacie.",
-                "help": "Cita validation_suggested_fixes. Preview alebo dry-run iba vypise diff, bez nich zapise navrhnute hodnoty a oznaci zaznamy na revalidaciu.",
+                "name": "apply-validation-fixes",
+                "description": "Aplikuje navrhnuté opravy z validácie.",
+                "help": "Číta validation_suggested_fixes. Preview alebo dry-run iba vypíše diff, bez nich zapíše navrhnuté hodnoty.",
                 "options": (
-                    {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximalny pocet zaznamov. 0 znamena vsetky."},
-                    {"name": "preview", "flag": "--preview", "type": "bool", "label": "--preview", "help": "Zobrazi farebny diff bez zapisu do DB."},
-                    {"name": "dry_run", "flag": "--dry-run", "type": "bool", "label": "--dry-run", "help": "Alias pre preview, bez zapisu do DB."},
+                    {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximálny počet záznamov. 0 znamená všetky."},
+                    {"name": "preview", "flag": "--preview", "type": "bool", "label": "--preview", "help": "Zobrazí farebný diff bez zápisu do DB."},
+                    {"name": "dry_run", "flag": "--dry-run", "type": "bool", "label": "--dry-run", "help": "Alias pre preview, bez zápisu do DB."},
                 ),
             },
-            {
-                "name": "validate-status",
-                "description": "Vypise statistiky validacie.",
-                "help": "Prehlad stavov validacie a problemov, ktore este cakaju na spracovanie.",
-                "badge": "info",
-                "options": (),
-            },
+            {"name": "metadata-validation-status", "description": "Vypíše štatistiky validácie.", "help": "Prehľad stavov validácie a problémov čakajúcich na spracovanie.", "badge": "info", "options": ()},
         ),
     },
     {
         "title": "Autori",
         "commands": (
             {
-                "name": "heuristics",
-                "description": "Heuristicky najde internych autorov a afiliacie.",
-                "help": "Spracuje WoS afiliacne bloky alebo DC autorov, matchuje ich oproti registru a doplna faculty/OU hodnoty.",
+                "name": "detect-authors",
+                "description": "Nájde interných autorov a ich afiliácie.",
+                "help": "Spracuje WoS afiliačné bloky a autorov, matchuje ich oproti remote OBD registru a dopĺňa faculty/OU hodnoty.",
                 "options": (
-                    {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximalny pocet zaznamov. 0 znamena vsetky."},
-                    {"name": "batch_size", "flag": "--batch-size", "type": "int", "label": "--batch-size", "default": "", "help": "Velkost davky. Prazdne pouzije hodnotu z konfiguracie."},
-                    {"name": "reprocess_errors", "flag": "--reprocess-errors", "type": "bool", "label": "--reprocess-errors", "help": "Spracuje znova zaznamy so stavom error."},
-                    {"name": "reprocess", "flag": "--reprocess", "type": "bool", "label": "--reprocess", "help": "Spracuje znova aj zaznamy so stavom processed."},
-                    {"name": "normalize", "flag": "--normalize", "type": "bool", "label": "--normalize", "help": "Pouzije normalizovane mena bez diakritiky a lowercase pri fuzzy matchingu."},
+                    {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximálny počet záznamov. 0 znamená všetky."},
+                    {"name": "batch_size", "flag": "--batch-size", "type": "int", "label": "--batch-size", "default": "", "help": "Veľkosť dávky. Prázdne použije hodnotu z konfigurácie."},
+                    {"name": "reprocess_errors", "flag": "--reprocess-errors", "type": "bool", "label": "--reprocess-errors", "help": "Spracuje znova záznamy so stavom error."},
+                    {"name": "reprocess", "flag": "--reprocess", "type": "bool", "label": "--reprocess", "help": "Spracuje znova aj záznamy so stavom processed."},
+                    {"name": "normalize", "flag": "--normalize", "type": "bool", "label": "--normalize", "help": "Použije mená bez diakritiky/lowercase pri fuzzy matchingu."},
                 ),
             },
             {
-                "name": "heuristics-llm",
-                "description": "LLM fallback pre autorov oznacenych heuristikou.",
-                "help": "Spracuje zaznamy s author_needs_llm=true a doplni autorov, fakulty a OU s kontrolou proti registru.",
+                "name": "detect-authors-llm",
+                "description": "LLM fallback pre internych autorov.",
+                "help": "Spracuje zaznamy s author_needs_llm=true a doplni autorov, fakulty a ustavy s kontrolou oproti registru.",
                 "options": (
                     {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximalny pocet zaznamov. 0 znamena vsetky."},
                     {"name": "batch_size", "flag": "--batch-size", "type": "int", "label": "--batch-size", "default": "", "help": "Velkost davky. Prazdne pouzije hodnotu z konfiguracie."},
                     {"name": "provider", "flag": "--provider", "type": "select", "label": "--provider", "default": "", "choices": (("", "z .env"), ("ollama", "ollama"), ("openai", "openai")), "help": "LLM provider. Prazdne pouzije LLM_PROVIDER z .env."},
+                    {"name": "reprocess", "flag": "--reprocess", "type": "bool", "label": "--reprocess", "help": "Spracuje znova aj zaznamy so stavom processed alebo validation_error."},
                 ),
             },
-            {"name": "heuristics-compare", "description": "Porovna programove vysledky s knihovnikom.", "help": "Porovnava author_internal_names oproti utb.contributor.internalauthor a vypise typy zhody.", "badge": "info", "options": ()},
-            {"name": "heuristics-status", "description": "Vypise statistiky autorov a LLM.", "help": "Prehlad stavov author_heuristic_status a author_llm_status.", "badge": "info", "options": ()},
+            {"name": "compare-author-detection", "description": "Porovna detekciu autorov s knihovnickou hodnotou.", "help": "Porovnava author_internal_names oproti utb.contributor.internalauthor.", "badge": "info", "options": ()},
+            {"name": "author-detection-status", "description": "Vypise statistiky detekcie autorov.", "help": "Prehlad author_heuristic_status a author_llm_status.", "badge": "info", "options": ()},
         ),
     },
     {
         "title": "Datumy",
         "commands": (
-            {"name": "dates-setup", "description": "Prida datumove a LLM stlpce.", "help": "Jednorazova priprava DATE, date_flags a date_llm_* stlpcov. Je idempotentna.", "badge": "raz", "options": ()},
             {
-                "name": "dates",
-                "description": "Heuristicky parsuje utb_fulltext_dates.",
-                "help": "Riesi Received/Reviewed/Accepted/Published labely a nejednoznacne DMY/MDY bodkove datumy.",
+                "name": "extract-dates",
+                "description": "Extrahuje datumy z fulltextovych metadat.",
+                "help": "Riesi Received/Reviewed/Revised/Accepted/Published labely a nejednoznacne DMY/MDY datumy.",
                 "options": (
                     {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximalny pocet zaznamov. 0 znamena vsetky."},
                     {"name": "batch_size", "flag": "--batch-size", "type": "int", "label": "--batch-size", "default": 200, "help": "Velkost davky pri spracovani."},
@@ -157,7 +144,7 @@ PIPELINE_SECTIONS: tuple[dict, ...] = (
                 ),
             },
             {
-                "name": "dates-llm",
+                "name": "extract-dates-llm",
                 "description": "LLM fallback pre nejednoznacne datumy.",
                 "help": "Spracuje zaznamy s date_needs_llm=true a doplni datumove stlpce.",
                 "options": (
@@ -165,55 +152,68 @@ PIPELINE_SECTIONS: tuple[dict, ...] = (
                     {"name": "batch_size", "flag": "--batch-size", "type": "int", "label": "--batch-size", "default": "", "help": "Velkost davky. Prazdne pouzije hodnotu z konfiguracie."},
                     {"name": "provider", "flag": "--provider", "type": "select", "label": "--provider", "default": "", "choices": (("", "z .env"), ("ollama", "ollama"), ("openai", "openai")), "help": "LLM provider. Prazdne pouzije LLM_PROVIDER z .env."},
                     {"name": "reprocess", "flag": "--reprocess", "type": "bool", "label": "--reprocess", "help": "Spracuje znova aj chybove LLM zaznamy."},
-                    {"name": "include_dash", "flag": "--include-dash", "type": "bool", "label": "--include-dash", "help": "Zahrnie aj zaznamy, kde utb_fulltext_dates obsahuje '{-}'."},
+                    {"name": "include_dash", "flag": "--include-dash", "type": "bool", "label": "--include-dash", "help": "Zahrnie aj zaznamy, kde utb.fulltext.dates obsahuje '{-}'."},
                 ),
             },
-            {"name": "dates-status", "description": "Vypise statistiky datumov.", "help": "Prehlad date_heuristic_status a date_llm_status.", "badge": "info", "options": ()},
+            {"name": "date-extraction-status", "description": "Vypise statistiky datumov.", "help": "Prehlad date_heuristic_status a date_llm_status.", "badge": "info", "options": ()},
         ),
     },
     {
-        "title": "Zurnaly",
+        "title": "Žurnály",
         "commands": (
-            {"name": "journals-setup", "description": "Prida journal_norm_* stlpce.", "help": "Jednorazova priprava stlpcov pre normalizaciu publisher/ispartof.", "badge": "raz", "options": ()},
             {
-                "name": "journals-lookup",
-                "description": "Vyhlada kanonicke publisher/ispartof hodnoty.",
-                "help": "Lookupuje ISSN/ISBN cez Crossref, OpenAlex, Google Books, OpenLibrary alebo vyberie kanonicku hodnotu z existujucich zaznamov.",
+                "name": "normalize-journals",
+                "description": "Navrhne kanonicky journal a publisher.",
+                "help": "Skusa DOI-level Crossref Works, ISSN/ISBN zdroje a existujuce zaznamy.",
                 "options": (
-                    {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximalny pocet ISSN/ISBN skupin. 0 znamena vsetky."},
+                    {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximalny pocet skupin. 0 znamena vsetky."},
                     {"name": "reprocess", "flag": "--reprocess", "type": "bool", "label": "--reprocess", "help": "Spracuje znova aj skupiny so stavom no_change alebo has_proposal."},
                 ),
             },
             {
-                "name": "journals-apply",
-                "description": "Zobrazi a aplikuje navrhy normalizacie.",
-                "help": "Preview iba zobrazi diff. Bez preview vie zapisat schvalene zmeny do dc.publisher a dc.relation.ispartof.",
+                "name": "apply-journal-normalization",
+                "description": "Aplikuje navrhy normalizacie journalu.",
+                "help": "Preview iba zobrazí diff. Bez preview zapíše schválené zmeny do dc.publisher a dc.relation.ispartof.",
                 "options": (
                     {"name": "preview", "flag": "--preview", "type": "bool", "label": "--preview", "help": "Zobrazi diff bez zapisu do DB."},
-                    {"name": "interactive", "flag": "--interactive", "type": "bool", "label": "--interactive", "help": "CLI rezim s potvrdenim kazdej ISSN skupiny. Vo web UI nie je vhodny na automaticke planovanie."},
+                    {"name": "interactive", "flag": "--interactive", "type": "bool", "label": "--interactive", "help": "CLI rezim s potvrdenim kazdej skupiny."},
                     {"name": "limit", "flag": "--limit", "type": "int", "label": "--limit", "default": 0, "help": "Maximalny pocet zaznamov. 0 znamena vsetky."},
                     {"name": "issn", "flag": "--issn", "type": "text", "label": "--issn", "default": "", "help": "Spracuje iba konkretnu ISSN/ISBN skupinu."},
                 ),
             },
-            {"name": "journals-status", "description": "Vypise statistiky normalizacie.", "help": "Prehlad journal_norm_status hodnot.", "badge": "info", "options": ()},
+            {"name": "journal-normalization-status", "description": "Vypise statistiky normalizacie journalov.", "help": "Prehlad journal_norm_status hodnot.", "badge": "info", "options": ()},
         ),
     },
     {
         "title": "Deduplikacia",
         "commands": (
-            {"name": "dedup-setup", "description": "Vytvori tabulku dedup_histoire.", "help": "Jednorazova priprava historie pred fyzickym zlucovanim duplicit.", "badge": "raz", "options": ()},
+            {"name": "setup-dedup-history", "description": "Pripravi historiu deduplikacie.", "help": "Vytvori tabulku dedup_histoire pre audit pred fyzickym zlucenim.", "badge": "raz", "options": ()},
             {
-                "name": "deduplicate",
+                "name": "deduplicate-records",
                 "description": "Najde, zluci alebo oznaci duplicity.",
-                "help": "Kombinuje presnu zhodu, obsahovu zhodu a fuzzy titulovu zhodu. Fyzicke merge operacie kopiruju historiu do dedup_histoire.",
+                "help": "Presná zhoda, obsahová zhoda a fuzzy titulová zhoda. Zlúčiteľné záznamy sa kopírujú do histórie.",
                 "options": (
-                    {"name": "by", "flag": "--by", "type": "text", "label": "--by", "default": "dc.identifier.doi", "help": "Stlpec pre presnu zhodu, napriklad dc.identifier.doi alebo dc.title."},
-                    {"name": "threshold", "flag": "--threshold", "type": "float", "label": "--threshold", "default": 0, "help": "Jaro-Winkler prah pre fuzzy titul. 0 pouzije hodnotu z .env."},
+                    {
+                        "name": "by",
+                        "flag": "--by",
+                        "type": "select",
+                        "label": "--by",
+                        "default": "dc.identifier.doi",
+                        "choices": (
+                            ("dc.identifier.doi", "DOI"),
+                            ("utb.identifier.obdid", "OBDID"),
+                            ("utb.identifier.wok", "WoS ID"),
+                            ("utb.identifier.scopus", "Scopus ID"),
+                            ("dc.title", "Názov"),
+                        ),
+                        "help": "Stlpec pre presnu zhodu pri prvej faze deduplikacie.",
+                    },
+                    {"name": "threshold", "flag": "--threshold", "type": "float", "label": "--threshold", "default": 0, "help": "Jaro-Winkler prah pre fuzzy titul. 0 pouzije .env hodnotu."},
                     {"name": "no_fuzzy", "flag": "--no-fuzzy", "type": "bool", "label": "--no-fuzzy", "help": "Vypne fuzzy titulovu fallback fazu."},
                     {"name": "dry_run", "flag": "--dry-run", "type": "bool", "label": "--dry-run", "help": "Iba vypise vysledky, bez zapisu do DB."},
                 ),
             },
-            {"name": "dedup-status", "description": "Vypise statistiky deduplikacie.", "help": "Prehlad duplicit a historie deduplikacie.", "badge": "info", "options": ()},
+            {"name": "deduplication-status", "description": "Vypise statistiky deduplikacie.", "help": "Prehlad duplicit a historie deduplikacie.", "badge": "info", "options": ()},
         ),
     },
 )

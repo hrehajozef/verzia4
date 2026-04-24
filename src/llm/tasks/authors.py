@@ -12,9 +12,23 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_valida
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
 
-from src.authors.registry import InternalAuthor, _normalize_name, get_author_registry
+from src.authors.registry import (
+    InternalAuthor,
+    _normalize_name,
+    get_author_registry,
+    match_author,
+)
 from src.authors.parsers.wos import normalize_text
-from src.common.constants import DEPARTMENTS, FACULTIES, LLMStatus, QUEUE_TABLE
+from src.authors.source_authors import split_source_author_lists
+from src.common.constants import (
+    CZECH_FACULTY_MAP_NORM,
+    CZECH_DEPARTMENT_MAP_NORM,
+    DEPARTMENTS,
+    FACULTIES,
+    LLMStatus,
+    QUEUE_TABLE,
+    _norm,
+)
 from src.config.settings import settings
 from src.db.engines import get_local_engine
 from src.llm.session import LLMSession, create_authors_session
@@ -55,9 +69,29 @@ class LLMAuthorEntry(BaseModel):
     @field_validator("faculty")
     @classmethod
     def validate_faculty(cls, v: str) -> str:
-        if v and v not in _VALID_FACULTY_NAMES:
+        if not v:
             return ""
-        return v
+        if v in _VALID_FACULTY_NAMES:
+            return v
+        translated_id = CZECH_FACULTY_MAP_NORM.get(_norm(v))
+        if translated_id:
+            return FACULTIES.get(translated_id, "")
+        return ""
+
+    @field_validator("ou")
+    @classmethod
+    def validate_ou(cls, v: str) -> str:
+        if not v:
+            return v
+        # Already a valid English OU name
+        if v in _VALID_DEPT_NAMES:
+            return v
+        # Try translating from Czech
+        translated = CZECH_DEPARTMENT_MAP_NORM.get(_norm(v))
+        if translated and translated in _VALID_DEPT_NAMES:
+            return translated
+        # Unknown or invalid value – clear it
+        return ""
 
 
 class LLMResult(BaseModel):
@@ -198,14 +232,40 @@ AUTHORS_SETUP_PREAMBLE: list[dict] = [
 # -----------------------------------------------------------------------
 
 def build_user_message(
-    resource_id:              int,
-    wos_affiliation:          str | None,
-    scopus_affiliation:       str | None,
-    flags:                    dict[str, Any] | None,
+    resource_id: int,
     allowed_internal_authors: list[str],
+    *,
+    repository_authors: list[str] | None = None,
+    wos_authors: list[str] | None = None,
+    scopus_authors: list[str] | None = None,
+    wos_affiliation: str | None = None,
+    scopus_affiliation: str | None = None,
+    fulltext_affiliation: str | None = None,
+    title: str | None = None,
+    journal: str | None = None,
+    doi: str | None = None,
+    source_tags: list[str] | None = None,
+    flags: dict[str, Any] | None = None,
 ) -> str:
     parts: list[str] = [f"=== Záznam resource_id={resource_id} ==="]
 
+    if title:
+        parts.append(f"Názov publikácie:\n{title}")
+    if journal:
+        parts.append(f"Časopis / zdroj:\n{journal}")
+    if doi:
+        parts.append(f"DOI:\n{doi}")
+    if source_tags:
+        parts.append("Zdrojové tagy záznamu:\n" + json.dumps(source_tags, ensure_ascii=False))
+    if repository_authors:
+        parts.append(
+            "Zjednotený zoznam autorov v repozitári (dc.contributor.author):\n"
+            + json.dumps(repository_authors, ensure_ascii=False)
+        )
+    if wos_authors:
+        parts.append("Autori identifikovaní z WoS:\n" + json.dumps(wos_authors, ensure_ascii=False))
+    if scopus_authors:
+        parts.append("Autori identifikovaní zo Scopus:\n" + json.dumps(scopus_authors, ensure_ascii=False))
     if wos_affiliation:
         parts.append(f"WoS afiliácia (obsahuje mená autorov):\n{wos_affiliation}")
     else:
@@ -213,6 +273,8 @@ def build_user_message(
 
     if scopus_affiliation:
         parts.append(f"Scopus afiliácia (bez mien, len inštitúcie):\n{scopus_affiliation}")
+    if fulltext_affiliation:
+        parts.append(f"Fulltext afiliácia:\n{fulltext_affiliation}")
 
     if flags:
         relevant = {
@@ -242,6 +304,85 @@ def build_user_message(
     )
 
     return "\n\n".join(parts)
+
+
+def _registry_identity(author: InternalAuthor) -> str:
+    if author.limited_author_id is not None:
+        return f"id:{author.limited_author_id}"
+    return f"name:{_normalize_name(author.canonical_name)}"
+
+
+def _source_author_allowlist(
+    source_authors: list[str] | None,
+    registry: list[InternalAuthor],
+) -> tuple[list[str], dict[str, InternalAuthor], dict[str, str]]:
+    allowed: list[str] = []
+    allowed_map: dict[str, InternalAuthor] = {}
+    preferred_by_identity: dict[str, str] = {}
+
+    for source_name in source_authors or []:
+        clean_name = str(source_name).strip()
+        if not clean_name:
+            continue
+        match = match_author(
+            clean_name,
+            registry,
+            settings.author_match_threshold,
+            normalize=False,
+            require_surname_match=True,
+        )
+        if not (match.matched and match.author):
+            continue
+        identity = _registry_identity(match.author)
+        if clean_name not in allowed_map:
+            allowed.append(clean_name)
+            allowed_map[clean_name] = match.author
+        preferred_by_identity.setdefault(identity, clean_name)
+
+    return allowed, allowed_map, preferred_by_identity
+
+
+def _first_value(value: Any) -> str | None:
+    if isinstance(value, (list, tuple)):
+        for item in value:
+            text_value = str(item).strip()
+            if text_value:
+                return text_value
+        return None
+    if value is None:
+        return None
+    text_value = str(value).strip()
+    return text_value or None
+
+
+def _history_author_map(
+    engine: Engine,
+    schema: str,
+    resource_ids: list[int],
+) -> dict[int, list[dict[str, Any]]]:
+    if not resource_ids:
+        return {}
+    try:
+        with engine.connect() as conn:
+            rows = conn.execute(text(f"""
+                SELECT
+                    dedup_kept_resource_id,
+                    "utb.source" AS source_arr,
+                    "dc.contributor.author" AS authors_arr
+                FROM "{schema}"."dedup_histoire"
+                WHERE dedup_kept_resource_id = ANY(:ids)
+            """), {"ids": resource_ids}).fetchall()
+    except Exception:
+        rows = []
+
+    history_map: dict[int, list[dict[str, Any]]] = {rid: [] for rid in resource_ids}
+    for row in rows:
+        kept_id = int(row.dedup_kept_resource_id)
+        history_map.setdefault(kept_id, []).append({
+            "sources": row.source_arr,
+            "authors": row.authors_arr,
+        })
+    return history_map
 
 
 # -----------------------------------------------------------------------
@@ -290,10 +431,50 @@ def _select_candidates(
 # Filter výstupu voči registru (anti-halucinácia)
 # -----------------------------------------------------------------------
 
-def _filter_by_registry(llm_result: LLMResult, registry: list[InternalAuthor]) -> LLMResult:
-    allowed  = {a.full_name for a in registry}
-    filtered = [e for e in llm_result.internal_authors if e.name in allowed]
-    return LLMResult(internal_authors=filtered)
+def _filter_by_registry(
+    llm_result: LLMResult,
+    registry: list[InternalAuthor],
+    allowed_names: list[str],
+    allowed_map: dict[str, InternalAuthor],
+    preferred_by_identity: dict[str, str],
+) -> LLMResult:
+    allowed_name_set = set(allowed_names)
+    normalized_entries: list[LLMAuthorEntry] = []
+    seen_identities: set[str] = set()
+
+    for entry in llm_result.internal_authors:
+        chosen_name = entry.name.strip()
+        matched_author = allowed_map.get(chosen_name)
+
+        if matched_author is None:
+            candidate_match = match_author(
+                chosen_name,
+                registry,
+                settings.author_match_threshold,
+                normalize=True,
+                require_surname_match=True,
+            )
+            if not (candidate_match.matched and candidate_match.author):
+                continue
+            identity = _registry_identity(candidate_match.author)
+            preferred_name = preferred_by_identity.get(identity)
+            if not preferred_name:
+                continue
+            chosen_name = preferred_name
+            matched_author = candidate_match.author
+
+        identity = _registry_identity(matched_author)
+        preferred_name = preferred_by_identity.get(identity, chosen_name)
+        if preferred_name not in allowed_name_set or identity in seen_identities:
+            continue
+        seen_identities.add(identity)
+        normalized_entries.append(LLMAuthorEntry(
+            name=preferred_name,
+            faculty=entry.faculty,
+            ou=entry.ou,
+        ))
+
+    return LLMResult(internal_authors=normalized_entries)
 
 
 # -----------------------------------------------------------------------
@@ -302,8 +483,16 @@ def _filter_by_registry(llm_result: LLMResult, registry: list[InternalAuthor]) -
 
 def process_llm_record(
     resource_id: int,
+    repo_authors: list[str] | None,
+    wos_authors: list[str] | None,
+    scopus_authors: list[str] | None,
     wos_aff:     list[str] | None,
     scopus_aff:  list[str] | None,
+    fulltext_aff: list[str] | None,
+    title: list[str] | None,
+    journal: list[str] | None,
+    doi: list[str] | None,
+    source_arr: list[str] | None,
     flags:       dict      | None,
     session:     LLMSession,
     registry:    list[InternalAuthor],
@@ -320,17 +509,30 @@ def process_llm_record(
     }
 
     unmatched = (flags or {}).get("utb_authors_unmatched", [])
-    candidate_names = _select_candidates(registry, unmatched, max_candidates=80)
+    candidate_names, allowed_map, preferred_by_identity = _source_author_allowlist(repo_authors, registry)
+    if not candidate_names:
+        candidate_names = _select_candidates(registry, unmatched, max_candidates=80)
+        allowed_map = {}
+        preferred_by_identity = {}
 
     wos_text    = "\n---\n".join(str(i) for i in (wos_aff or []) if i) or None
     scopus_text = "; ".join(str(i) for i in (scopus_aff or []) if i) or None
+    fulltext_text = "\n---\n".join(str(i) for i in (fulltext_aff or []) if i) or None
 
     user_msg = build_user_message(
-        resource_id              = resource_id,
-        wos_affiliation          = wos_text,
-        scopus_affiliation       = scopus_text,
-        flags                    = flags or {},
-        allowed_internal_authors = candidate_names,
+        resource_id=resource_id,
+        allowed_internal_authors=candidate_names,
+        repository_authors=[str(name).strip() for name in (repo_authors or []) if str(name).strip()],
+        wos_authors=[str(name).strip() for name in (wos_authors or []) if str(name).strip()],
+        scopus_authors=[str(name).strip() for name in (scopus_authors or []) if str(name).strip()],
+        wos_affiliation=wos_text,
+        scopus_affiliation=scopus_text,
+        fulltext_affiliation=fulltext_text,
+        title=_first_value(title),
+        journal=_first_value(journal),
+        doi=_first_value(doi),
+        source_tags=[str(value).strip() for value in (source_arr or []) if str(value).strip()],
+        flags=flags or {},
     )
 
     raw_output = ""
@@ -341,11 +543,17 @@ def process_llm_record(
             raw_output  = session.ask(user_msg)
             parsed_dict = parse_llm_json_output(raw_output)
             llm_result  = LLMResult(**parsed_dict)
-            llm_result  = _filter_by_registry(llm_result, registry)
+            llm_result  = _filter_by_registry(
+                llm_result,
+                registry,
+                candidate_names,
+                allowed_map,
+                preferred_by_identity,
+            )
 
-            authors   = [e.name    for e in llm_result.internal_authors]
-            faculties = list(dict.fromkeys(filter(None, [e.faculty for e in llm_result.internal_authors])))
-            ous       = list(dict.fromkeys(filter(None, [e.ou      for e in llm_result.internal_authors])))
+            authors = [e.name for e in llm_result.internal_authors]
+            faculties = [e.faculty for e in llm_result.internal_authors]
+            ous = [e.ou for e in llm_result.internal_authors]
 
             result.update({
                 "author_llm_status":  LLMStatus.PROCESSED,
@@ -380,6 +588,7 @@ def run_llm(
     batch_size: int | None    = None,
     limit:      int           = 0,
     provider:   str | None    = None,
+    reprocess:  bool          = False,
 ) -> None:
     engine     = engine     or get_local_engine()
     batch_size = batch_size or settings.llm_batch_size
@@ -389,61 +598,118 @@ def run_llm(
 
     llm_client = get_llm_client(provider)
     session    = create_authors_session(llm_client)
-    registry   = get_author_registry(engine)
+    registry   = get_author_registry()
 
+    statuses = [LLMStatus.NOT_PROCESSED, LLMStatus.ERROR]
+    if reprocess:
+        statuses.append(LLMStatus.PROCESSED)
+        statuses.append(LLMStatus.VALIDATION_ERROR)
+
+    # Nazbieraj všetky ID vopred – aby sa zmenený status po spracovaní
+    # neprekrýval s filtrom a nezapríčinil nekonečnú slučku.
     with engine.connect() as conn:
-        total = conn.execute(
+        orphan_count = conn.execute(
             text(
-                f'SELECT COUNT(*) FROM "{schema}"."{queue}"'
-                " WHERE author_needs_llm = TRUE AND author_llm_status IN (:np, :err)"
+                f'SELECT COUNT(*) FROM "{schema}"."{queue}" q '
+                f'LEFT JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id '
+                "WHERE q.author_needs_llm = TRUE AND q.author_llm_status = ANY(:s) "
+                "AND m.resource_id IS NULL"
             ),
-            {"np": LLMStatus.NOT_PROCESSED, "err": LLMStatus.ERROR},
+            {"s": statuses},
         ).scalar_one()
+        id_rows = conn.execute(
+            text(
+                f'SELECT q.resource_id FROM "{schema}"."{queue}" q '
+                f'JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id'
+                " WHERE q.author_needs_llm = TRUE AND q.author_llm_status = ANY(:s)"
+                " ORDER BY q.resource_id"
+            ),
+            {"s": statuses},
+        ).fetchall()
 
+    all_ids: list[int] = [r[0] for r in id_rows]
     if limit > 0:
-        total = min(total, limit)
+        all_ids = all_ids[:limit]
+
+    total = len(all_ids)
     if total == 0:
         print("[INFO] Žiadne záznamy na LLM spracovanie autorov.")
         return
 
+    if orphan_count:
+        print(
+            "[WARN] Preskakujem siroty v utb_processing_queue bez odpovedajúceho "
+            f"záznamu v utb_metadata_arr: {orphan_count}"
+        )
     print(f"[INFO] LLM autorov – záznamov na spracovanie: {total}")
     processed = 0
     errors    = 0
     started   = time.time()
 
     while processed < total:
-        batch = min(batch_size, total - processed)
+        batch_ids = all_ids[processed: processed + batch_size]
         with engine.connect() as conn:
             rows = conn.execute(
                 text(f"""
                     SELECT q.resource_id,
+                           m."dc.contributor.author"  AS repo_authors,
                            m."utb.wos.affiliation"    AS wos_aff,
                            m."utb.scopus.affiliation" AS scopus_aff,
+                           m."utb.fulltext.affiliation" AS fulltext_aff,
+                           m."dc.title"               AS title_arr,
+                           m."dc.relation.ispartof"   AS journal_arr,
+                           m."dc.identifier.doi"      AS doi_arr,
+                           m."utb.source"             AS source_arr,
                            q.author_flags
                     FROM "{schema}"."{queue}" q
                     JOIN "{schema}"."{table}" m ON q.resource_id = m.resource_id
-                    WHERE q.author_needs_llm = TRUE
-                      AND q.author_llm_status IN (:np, :err)
+                    WHERE q.resource_id = ANY(:ids)
                     ORDER BY q.resource_id
-                    LIMIT :lim
                 """),
-                {"np": LLMStatus.NOT_PROCESSED, "err": LLMStatus.ERROR, "lim": batch},
+                {"ids": batch_ids},
             ).fetchall()
 
         if not rows:
-            break
+            processed += len(batch_ids)
+            print(f"  [WARN] Dávka bez platných záznamov: {batch_ids}")
+            continue
 
-        updates = [
-            process_llm_record(
-                resource_id = row.resource_id,
-                wos_aff     = row.wos_aff,
-                scopus_aff  = row.scopus_aff,
-                flags       = row.author_flags or {},
-                session     = session,
-                registry    = registry,
+        history_map = _history_author_map(engine, schema, [int(row.resource_id) for row in rows])
+        updates = []
+        for row in rows:
+            source_split = split_source_author_lists(
+                current_authors=row.repo_authors,
+                current_sources=row.source_arr,
+                history_rows=history_map.get(int(row.resource_id), []),
             )
-            for row in rows
-        ]
+            u = process_llm_record(
+                resource_id=row.resource_id,
+                repo_authors=row.repo_authors,
+                wos_authors=source_split.get("wos"),
+                scopus_authors=source_split.get("scopus"),
+                wos_aff=row.wos_aff,
+                scopus_aff=row.scopus_aff,
+                fulltext_aff=row.fulltext_aff,
+                title=row.title_arr,
+                journal=row.journal_arr,
+                doi=row.doi_arr,
+                source_arr=row.source_arr,
+                flags=row.author_flags or {},
+                session=session,
+                registry=registry,
+            )
+            updates.append(u)
+            status = u["author_llm_status"]
+            if status == LLMStatus.PROCESSED:
+                authors = (u.get("author_llm_result") or {}).get("internal_authors", [])
+                names   = [a.get("name", "") for a in authors]
+                print(f"  [ID {row.resource_id}] OK  autori: {names}")
+            else:
+                err = (u.get("author_llm_result") or {}).get("error", "")
+                raw = (u.get("author_llm_result") or {}).get("raw", "")
+                print(f"  [ID {row.resource_id}] {status}  chyba: {err}")
+                if raw:
+                    print(f"    raw: {raw[:300]}")
         errors += sum(1 for u in updates if u["author_llm_status"] != LLMStatus.PROCESSED)
 
         update_sql = f"""

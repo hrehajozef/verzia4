@@ -1,80 +1,69 @@
-# UTB Metadata Review - Webove rozhranie
+# UTB Metadata Review - Web UI
 
-Aktualizovane: 2026-04-13
-
-Tento dokument popisuje aktualny stav Flask UI pre kontrolu metadat, detail zaznamu a spustanie pipeline.
+Aktualizovane: 2026-04-20
 
 ## Spustenie
 
 ```bash
-uv run flask --app web run --debug
+uv run python app.py
 ```
 
 Predvolena adresa je `http://127.0.0.1:5000`.
 
 ## Navigacia
 
-- `/` - zoznam zaznamov na kontrolu a sekcia zmien cakajucich na schvalenie.
-- `/record/<resource_id>` - detail zaznamu, editacia poli, navrhy oprav, Crossref stlpec, panel autorov.
-- `/pipeline` - graficke spustanie a planovanie CLI pipeline.
+- `/` - zoznam zaznamov na kontrolu, vyhladavanie, triedenie, grupovanie duplicity a zmeny cakajuce na schvalenie.
+- `/record/<resource_id>` - detail zaznamu, editacia poli, navrhy oprav, Crossref stlpec a panel autorov.
+- `/settings/pipeline` - pipeline prikazy v nastaveniach.
+- `/settings/row-order` - nastavenie poradia riadkov na detaile.
 
-## Zoznam zaznamov
-
-Domovska stranka zobrazuje neskontrolovane zaznamy, vyhladavanie, triedenie a sekciu "Zmeny cakajuce na schvalenie". Pending sekcia cita zaznamy, ktore boli ulozene do zasobnika a este neboli schvalene knihovnikom.
+Samostatna navigacna polozka `Pipeline` bola odstranena. Pipeline je sucast nastaveni.
 
 ## Detail zaznamu
 
-Detail ma lavu cast s vyhladavanim internych autorov a hlavnu tabulku metadat. Repozitarovy stlpec je editovatelny; WoS a Scopus stlpce su tiez editovatelne pre rucne porovnanie a korekcie. Crossref stlpec sa doplna asynchronne cez `/api/crossref/<resource_id>`.
+Detail ma lavu cast s vyhladavanim autorov a hlavnu tabulku metadat. Stlpce Repozitar, WoS a Scopus su editovatelne; Crossref sa nacitava asynchronne cez `/api/crossref/<resource_id>`.
 
 Aktualne spravanie:
 
-- Navrhy v stlpci Repozitar maju prioritu: LLM vysledky (`author_llm_result`, `date_llm_result`) -> validacne navrhy -> heuristicke/queue fallback hodnoty.
-- Ulozenie do zasobnika funguje cez tlacidlo aj cez klavesovu skratku `Ctrl+S` na Linuxe/Windows a `Cmd+S` na macOS.
-- `utb.faculty` a `utb.ou` pouzivaju nativny select picker, aby neboli orezane overflow pravidlami tabulky.
-- Author panel ma scrollbar odsadeny od trojbodkoveho menu autora.
-- Scrollbary v projekte su sirsie a pouzivaju `scrollbar-gutter: stable`, aby menej zasahovali do obsahu.
+- Repozitarovy stlpec preferuje LLM navrhy pred validacnymi a heuristickymi fallbackmi.
+- `dc.contributor.author`, fakulty a ustavy sa zobrazia po jednej hodnote na riadok.
+- Vnutorny zapis viacerych hodnot pouziva oddelovac `||` bez medzier.
+- Ulozenie do zasobnika funguje tlacidlom aj skratkou `Ctrl+S` na Windows/Linux a `Cmd+S` na macOS.
+- Scrollbar v paneli autorov ma odsadenie od tlacidla s troma bodkami.
+- Scrollbary v projekte su sirsie a pouzivaju stabilny gutter.
+- Poradie riadkov detailu sa da menit v UI nastaveniach.
 
-## Crossref
-
-Detail UI pouziva DOI-level Crossref Works endpoint:
-
-```text
-https://api.crossref.org/works/{doi}
-```
-
-Pre mapovanie do hlavnej tabulky sa pouzivaju najma `title`, `author`, `publisher`, `container-title`, `published-print`/`published-online`/`published`/`issued`, `volume`, `issue`, `page`, `ISSN`, `DOI`, `URL`, `type`, `abstract` a `language`. Extra sekcia doplna napriklad funding, licencie, linky, ISSN typ, referencie a pocet citovani.
-
-## Pipeline stranka
+## Pipeline V Nastaveniach
 
 Pipeline UI je generovane z `web/blueprints/pipeline/catalog.py` a backend obsluhuje `web/blueprints/pipeline/routes.py`.
 
 Stranka obsahuje:
 
 - detailny popis procesu pipeline,
-- logicke sekcie prikazov: Inicializacia, Validacia, Autori, Datumy, Zurnaly, Deduplikacia,
-- riadok pre kazdy CLI prikaz zo `src/cli/__main__.py`,
-- checkbox pre oznacenie prikazu,
-- nazov prikazu a ikonku napovedy,
-- volitelne argumenty s napovedou ako checkboxy, textove polia alebo selecty,
+- logicke sekcie prikazov,
+- riadok pre kazdy povoleny CLI prikaz,
+- checkbox pre vyber prikazu,
+- vysvetlivky k prikazom a k volitelnym flagom,
+- textove, ciselne, select a boolean vstupy podla typu option,
 - tlacidlo `Spustit teraz` pri kazdom prikaze,
 - hromadne spustenie oznacenych prikazov,
-- planovanie oznacenych prikazov na konkretny cas,
-- zoznam planovanych/spustenych behov navrchu stranky s moznostou odstranenia,
-- terminalovy vystup streamovany cez SSE.
+- terminalovy vystup streamovany cez SSE,
+- navod pre Windows Task Scheduler a Linux cron.
 
-Planovane behy sa ukladaju do:
+Co tam uz nie je:
 
-```text
-data/pipeline_schedules.json
-```
-
-Backend spusta background scheduler thread, ktory priebezne kontroluje, ci uz nastal cas niektoreho naplanovaneho behu. Beh potom spusti sekvencne prikazy, ulozi vystup a nastavi stav na `done` alebo `error`.
+- interny casovac,
+- datetime input na planovanie,
+- zoznam naplanovanych behov,
+- schedule API,
+- `data/pipeline_schedules.json`,
+- background scheduler thread.
 
 Bezpecnost:
 
 - Backend akceptuje len prikazy a flagy z katalogu.
 - Prikazy sa spustaju ako `python -m src.cli <command>`.
-- `bootstrap --drop` a `journals-apply` dostavaju automaticke stdin potvrdenie, aby sa web beh nezasekol na CLI promptoch.
+- `bootstrap-local-db --drop` a `apply-journal-normalization` dostavaju automaticke stdin potvrdenie, aby sa web beh nezasekol na CLI promptoch.
 
 ## JavaScript
 
@@ -93,15 +82,15 @@ Dolezite funkcie:
 - `window.saveAllChanges()` - POST na `/record/<id>/save-fields`.
 - `loadCrossref()` - nacitanie Crossref Works dat.
 
-## Backend moduly
+## Backend Moduly
 
 ```text
 web/
   blueprints/
     records/routes.py      - zoznam, detail, save-fields, approve
-    api/authors.py         - GET/POST/DELETE /api/authors
+    api/authors.py         - API pre author search/picker
     api/crossref.py        - GET /api/crossref/<resource_id>
-    pipeline/routes.py     - GET /pipeline, POST /pipeline/run, schedules API
+    pipeline/routes.py     - GET /settings/pipeline, POST /settings/pipeline/run
   services/
     records_service.py
     queue_service.py       - zostavenie detailu a priorita navrhov

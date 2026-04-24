@@ -67,6 +67,11 @@ OUTPUT_COLUMNS: tuple[OutputColumn, ...] = (
     OutputColumn("author_llm_result",              "JSONB"),
     OutputColumn("author_llm_status",              "TEXT",    f"'{LLMStatus.NOT_PROCESSED}'"),
     OutputColumn("author_llm_processed_at",        "TIMESTAMPTZ"),
+    OutputColumn("utb_date_received",              "DATE"),
+    OutputColumn("utb_date_reviewed",              "DATE"),
+    OutputColumn("utb_date_accepted",              "DATE"),
+    OutputColumn("utb_date_published_online",      "DATE"),
+    OutputColumn("utb_date_published",             "DATE"),
 )
 
 # -----------------------------------------------------------------------
@@ -298,10 +303,93 @@ CZECH_FACULTY_MAP: dict[str, str] = {
     "Fakulta logistiky a krizového řízení":     "FLKR",
     "Fakulta humanitních studií":               "FHS",
     "Fakulta multimediálních komunikací":       "FMK",
+    "Univerzitní institut":                     "UI",
 }
 
 CZECH_FACULTY_MAP_NORM: dict[str, str] = {
     _norm(k): v for k, v in CZECH_FACULTY_MAP.items()
+}
+
+# Remote pracoviska v OBD su vedene po cesky. Do UI aj pipeline navrhov
+# chceme posielat len kontrolovane anglicke nazvy, idealne zhodne s tym,
+# co je povolene v pickeroch detailu.
+CZECH_DEPARTMENT_MAP: dict[str, str] = {
+    # University Institute
+    "Univerzitní institut": "University Institute",
+    "Centrum polymerních systémů": "Centre of Polymer Systems",
+    "Ředitelství CPS": "Centre of Polymer Systems",
+    "Výzkum CPS": "Centre of Polymer Systems",
+    "Výzkum CPS - ostatní": "Centre of Polymer Systems",
+
+    # Faculty of Technology
+    "Ústav analýzy a chemie potravin": "Department of Food Analysis and Chemistry",
+    "Ústav chemie": "Department of Chemistry",
+    "Ústav fyziky a materiálového inženýrství": "Department of Physics and Materials Engineering",
+    "Ústav inženýrství ochrany živ.prostředí": "Department of Environmental Protection Engineering",
+    "Ústav inženýrství polymerů": "Department of Polymer Engineering",
+    "Ústav potravinářského inženýrství": "Department of Food Technology",
+    "Ústav potravinářského inženýrství a chemie": "Department of Food Analysis and Chemistry",
+    "Ústav technologie potravin": "Department of Food Technology",
+    "Ústav technol.tuků,tenzidů a kosmetiky": "Department of Fat, Surfactant and Cosmetics Technology",
+    "Ústav výrobního inženýrství": "Department of Production Engineering",
+
+    # Faculty of Management and Economics
+    "Ústav ekonomie": "Department of Economics",
+    "Ústav financí a účetnictví": "Department of Finance and Accounting",
+    "Ústav managementu a marketingu": "Department of Management and Marketing",
+    "Ústav podnikové ekonomiky": "Department of Business Administration",
+    "Ústav průmyslového inženýrství a IS": "Department of Industrial Engineering and Information Systems",
+    "Ústav reg.rozvoje,veřejné správy a práva": "Department of Regional Development, Public Sector Administration and Law",
+    "Ústav statistiky a kvantitativních metod": "Department of Statistics and Quantitative Methods",
+    "Ústav tělesné výchovy": "Department of Physical Training",
+
+    # Faculty of Applied Informatics
+    "Centrum bezp.,inf. a pokroč. technologií": "Centre for Security, Information and Advanced Technologies (CEBIA-Tech)",
+    "Ústav automatizace a řídicí techniky": "Department of Automation and Control Engineering",
+    "Ústav bezpečnostního inženýrství": "Department of Security Engineering",
+    "Ústav elektroniky a měření": "Department of Electronics and Measurements",
+    "Ústav informatiky a umělé inteligence": "Department of Informatics and Artificial Intelligence",
+    "Ústav matematiky": "Department of Mathematics",
+    "Ústav počítač. a komunikačních systémů": "Department of Computer and Communication Systems",
+    "Ústav řízení procesů": "Department of Process Control",
+
+    # Faculty of Humanities
+    "Centrum jazykového vzdělání": "Language Centre",
+    "Centrum podpory vzdělávání": "Education Support Centre",
+    "Centrum výzkumu FHS": "Research Centre of FHS",
+    "Ústav moderních jazyků a literatur": "Department of Modern Languages and Literatures",
+    "Ústav pedagogických věd": "Department of Pedagogical Sciences",
+    "Ústav školní pedagogiky": "Department of School Education",
+    "Ústav zdravotnických studií": "Department of Health Care Sciences",
+    "Ústav zdravotnických věd": "Department of Health Care Sciences",
+
+    # Faculty of Logistics and Crisis Management
+    "Ústav environmentální bezpečnosti": "Department of Environmental Security",
+    "Ústav krizového řízení": "Department of Crisis Management",
+    "Ústav logistiky": "Department of Logistics",
+    "Ústav ochrany obyvatelstva": "Department of Population Protection",
+
+    # Faculty of Multimedia Communications
+    "Ústav marketingových komunikací": "Department of Marketing Communications",
+}
+
+CZECH_DEPARTMENT_MAP_NORM: dict[str, str] = {
+    _norm(k): v for k, v in CZECH_DEPARTMENT_MAP.items()
+}
+
+IGNORED_OU_NAMES_NORM: set[str] = {
+    _norm(value)
+    for value in (
+        "Děkanát",
+        "Fakultní sklad",
+        "Ředitelství CPS",
+        "Výzkum CPS",
+        "Výzkum CPS - ostatní",
+        "Transfer technologií",
+        "Komunikační agentura",
+        "Centrum dalšího vzdělávání",
+        "Regionální vzdělávací centrum UH",
+    )
 }
 
 # Inverzný slovník: anglický názov fakulty → faculty_id

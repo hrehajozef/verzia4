@@ -212,16 +212,44 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
       Uložiť do zásobníka (<span id="changed-count">0</span>)
     </button>
 
-    <button class="btn btn-sm btn-success"
-            hx-post="/record/{{ resource_id }}/approve"
-            hx-target="#approve-msg"
-            hx-swap="innerHTML">
+    <button id="approve-btn-top"
+            class="btn btn-sm btn-success"
+            type="button"
+            onclick="window.approveRecord()">
       Schváliť a uložiť ✓
     </button>
   </div>
 </div>
 
 <div id="approve-msg"></div>
+
+{% if detail.pending_changes %}
+<section class="mb-3 border rounded bg-light p-2">
+  <div class="fw-semibold small mb-2">Zmeny uložené v zásobníku pred schválením</div>
+  <div class="table-responsive">
+    <table class="table table-sm mb-0 align-middle">
+      <thead>
+        <tr>
+          <th>Field</th>
+          <th>Pôvodná hodnota</th>
+          <th>Nová hodnota</th>
+          <th>Čas</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for ch in detail.pending_changes %}
+        <tr>
+          <td class="font-monospace small">{{ ch.field_key }}</td>
+          <td class="small text-muted" style="white-space:pre-wrap;">{{ (ch.old_value or '') | replace('||', '\n') }}</td>
+          <td class="small" style="white-space:pre-wrap;">{{ (ch.new_value or '') | replace('||', '\n') }}</td>
+          <td class="small text-muted text-nowrap">{{ ch.created_at }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+</section>
+{% endif %}
 
 <!-- ── Hlavný layout ── -->
 <div class="detail-layout">
@@ -257,7 +285,7 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
           <span class="fw-semibold">{{ author.primary }}</span>
           {% if author.variants|length > 1 %}
           <br><small class="text-muted">
-            {% for v in author.variants[1:] %}{{ v }}{% if not loop.last %} || {% endif %}{% endfor %}
+            {% for v in author.variants[1:] %}{{ v }}{% if not loop.last %}<br>{% endif %}{% endfor %}
           </small>
           {% endif %}
         </div>
@@ -272,7 +300,7 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
       {% endfor %}
     </div>
 
-    <!-- Pridanie autora -->
+    {# Pridanie autora do utb_authors_limited je docasne skryte.
     <form class="mt-2"
           hx-post="/api/authors"
           hx-target="#authors-list"
@@ -283,6 +311,7 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
         <button type="submit" class="btn btn-utb btn-sm">+</button>
       </div>
     </form>
+    #}
   </aside>
 
   <!-- ── Hlavná tabuľka metadát ── -->
@@ -368,7 +397,7 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
           </td>
 
           <!-- Crossref bunka – naplní JS po načítaní z API -->
-          <td class="col-crossref text-muted" data-cf-field="{{ f.key }}">—</td>
+          <td class="col-crossref" data-cf-field="{{ f.key }}"><span class="text-muted">—</span></td>
         </tr>
         {% endfor %}
       </tbody>
@@ -388,10 +417,10 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
           onclick="window.saveAllChanges()">
     Uložiť do zásobníka (<span id="changed-count-bottom">0</span>)
   </button>
-  <button class="btn btn-success"
-          hx-post="/record/{{ resource_id }}/approve"
-          hx-target="#approve-msg"
-          hx-swap="innerHTML">
+  <button id="approve-btn-bottom"
+          class="btn btn-success"
+          type="button"
+          onclick="window.approveRecord()">
     Schváliť a uložiť ✓
   </button>
 </div>
