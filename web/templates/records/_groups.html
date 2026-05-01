@@ -1,5 +1,6 @@
 <!-- Skrytý indikátor aktívneho zoradenia – čítaný JS-om po HTMX swap -->
 <div class="d-none" data-active-sort="{{ sort }}"></div>
+<div class="d-none" data-show-approved="{{ 1 if show_approved else 0 }}"></div>
 
 {% for group in group_list %}
 <section class="record-group mb-4" id="group-{{ group.key }}">
@@ -48,6 +49,10 @@
             <td class="text-muted small" style="overflow:hidden; white-space:nowrap; text-overflow:ellipsis;"
                 title="{{ rec.resource_id }}">
               {{ rec.resource_id }}
+              {% if rec.checked_count %}
+              <br><span class="badge text-bg-success"
+                        title="Záznam už bol schválený {{ rec.checked_count }}×">schválené</span>
+              {% endif %}
               {% if rec.duplicate_matches %}
               <br><span class="badge text-bg-warning"
                         title="{% for match in rec.duplicate_matches %}{{ match.resource_id }}: {{ match.summary }}{% if not loop.last %}&#10;{% endif %}{% endfor %}">dup</span>
@@ -80,7 +85,7 @@
           {% for child in rec.merged_children %}
           {% set child_voliss = (child.volume or '') + ('/' + child.issue if child.issue else '') if child.volume else (child.issue or '') %}
           <tr class="duplicate-child-row">
-            <td class="text-muted small" title="Pôvodný zlúčený záznam">↳ {{ child.resource_id }}</td>
+            <td class="text-muted small" title="Pôvodný zlúčený záznam">↳ <a href="{{ url_for('records.record_history_detail', row_ref=child.history_row_ref) }}" class="text-decoration-none">{{ child.resource_id }}</a></td>
             <td style="word-break:break-word;">
               <div>{{ child.title or '(bez názvu)' }}</div>
               <div class="small text-muted mt-1">{{ child.summary }}</div>

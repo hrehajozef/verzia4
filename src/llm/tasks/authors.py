@@ -8,6 +8,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+import jellyfish
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 from sqlalchemy import text
 from sqlalchemy.engine import Engine
@@ -20,6 +21,7 @@ from src.authors.registry import (
 )
 from src.authors.parsers.wos import normalize_text
 from src.authors.source_authors import split_source_author_lists
+from src.authors.workplace_tree import load_workplace_tree, walk_to_faculty
 from src.common.constants import (
     CZECH_FACULTY_MAP_NORM,
     CZECH_DEPARTMENT_MAP_NORM,
@@ -80,17 +82,28 @@ class LLMAuthorEntry(BaseModel):
 
     @field_validator("ou")
     @classmethod
-    def validate_ou(cls, v: str) -> str:
+    def validate_ou(cls, v: str, info) -> str:
         if not v:
             return v
-        # Already a valid English OU name
-        if v in _VALID_DEPT_NAMES:
+        allowed = set(info.context.get("allowed_workplaces", set())) if info.context else set()
+        if allowed and v in allowed:
             return v
-        # Try translating from Czech
+        if not allowed and v in _VALID_DEPT_NAMES:
+            return v
         translated = CZECH_DEPARTMENT_MAP_NORM.get(_norm(v))
-        if translated and translated in _VALID_DEPT_NAMES:
+        if translated and ((not allowed and translated in _VALID_DEPT_NAMES) or translated in allowed):
             return translated
-        # Unknown or invalid value – clear it
+        if allowed:
+            best_match = ""
+            best_score = 0.0
+            norm_value = _norm(v)
+            for candidate in allowed:
+                score = jellyfish.jaro_winkler_similarity(norm_value, _norm(candidate))
+                if score > best_score:
+                    best_score = score
+                    best_match = candidate
+            if best_score >= 0.92:
+                return best_match
         return ""
 
 
@@ -164,39 +177,42 @@ _DEPT_SAMPLE  = "\n".join(
     for dept, fid in list(DEPARTMENTS.items())[:12]
 )
 
-SYSTEM_PROMPT = f"""Si expert na analýzu afiliácií vedeckých publikácií UTB (Tomas Bata University in Zlín).
+SYSTEM_PROMPT = f"""Si expert na anal?zu afili?ci? vedeck?ch publik?ci? UTB (Tomas Bata University in Zl?n).
 
-## Tvoja úloha:
-Identifikuj interných UTB autorov z poskytnutých afiliačných textov (WoS a Scopus formát).
-Pre každého autora urč fakultu a oddelenie/ústav.
+## Tvoja ?loha:
+Identifikuj intern?ch UTB autorov z poskytnut?ch afilia?n?ch textov (WoS a Scopus form?t).
+Pre ka?d?ho autora ur? fakultu a oddelenie/?stav.
 
-## Pravidlá – MUSÍŠ ich dodržať
-1. Do výstupu zaraď LEN autorov, ktorých meno sa nachádza v poskytnutom zozname "Povolené mená".
-2. Výstup je VÝHRADNE JSON objekt so štruktúrou: {{"internal_authors": [...]}}
-3. Každý autor má POVINNÉ kľúče: "name", "faculty", "ou".
-4. "name" musí byť PRESNE meno z whitelistu – s diakritikou, formát "Priezvisko, Meno".
-5. "faculty" musí byť jeden z povolených názvov (alebo prázdny reťazec ""):
+## Pravidl? ? MUS?? ich dodr?a?
+1. Do v?stupu zara? LEN autorov, ktor?ch meno sa nach?dza v poskytnutom zozname "Povolen? men?".
+2. V?stup je V?HRADNE JSON objekt so ?trukt?rou: {{"internal_authors": [...]}}
+3. Ka?d? autor m? POVINN? k???e: "name", "faculty", "ou".
+4. "name" mus? by? PRESNE meno z whitelistu ? s diakritikou, form?t "Priezvisko, Meno".
+5. "faculty" mus? by? jeden z povolen?ch n?zvov (alebo pr?zdny re?azec ""):
 {_FACULTY_LIST}
-6. "ou" je plný anglický názov oddelenia/ústavu (alebo prázdny reťazec "").
-7. Ak autor nie je v zozname "Povolené mená", nevypisuj ho – ani ako odhad.
-8. Ak nevieš určiť fakultu alebo oddelenie, použi "".
-9. Žiadne komentáre, markdown, vysvetlenia – iba JSON.
-10. Ak sú WoS mená autorov skrátené (napr. "Novak J" alebo "Novak, J"), porovnaj ich
-    s whitelistom podľa priezviska a inicálky mena. Ak priezvisko + inicálka zodpovedajú,
-    použi PRESNÉ meno z whitelistu (s diakritikou).
+6. "ou" je pln? anglick? n?zov oddelenia/?stavu (alebo pr?zdny re?azec "").
+7. Pre "ou" pou??vaj V?HRADNE n?zvy z poskytnut?ho whitelistu pracov?sk (UTB_WORKPLACES). Nikdy neh?daj nov? n?zov OU.
+8. Ak autor nie je v zozname "Povolen? men?", nevypisuj ho ? ani ako odhad.
+9. Ak nevie? ur?i? fakultu alebo oddelenie, pou?i "".
+10. ?iadne koment?re, markdown, vysvetlenia ? iba JSON.
+11. Ak s? WoS men? autorov skr?ten? (napr. "Novak J" alebo "Novak, J"), porovnaj ich
+    s whitelistom pod?a priezviska a inic?lky mena. Ak priezvisko + inic?lka zodpovedaj?,
+    pou?i PRESN? meno z whitelistu (s diakritikou).
+12. Scopus vstup m??e ma? nov? form?t "Author, affiliation; Author, affiliation". V takom pr?pade p?ruj autora priamo s jeho afili?ciou.
 
-## Príklady oddelení (ukážka)
+## Pr?klady oddelen? (uk??ka)
 {_DEPT_SAMPLE}
 
-## WoS formát vstupu
-[Priezvisko1, Meno1; Priezvisko2 M] Inštitúcia, Oddelenie, Adresa;
-[Priezvisko3, Meno3] Iná inštitúcia, Adresa
+## WoS form?t vstupu
+[Priezvisko1, Meno1; Priezvisko2 M] In?tit?cia, Oddelenie, Adresa;
+[Priezvisko3, Meno3] In? in?tit?cia, Adresa
 
-## Scopus formát vstupu (bez mien autorov)
-Oddelenie, Fakulta, Inštitúcia, Adresa; Oddelenie2, Fakulta2, Inštitúcia2
+## Scopus form?t vstupu
+Star?? form?t: Oddelenie, Fakulta, In?tit?cia, Adresa; Oddelenie2, Fakulta2, In?tit?cia2
+Nov? form?t: Author A., Oddelenie, Fakulta, In?tit?cia, Adresa; Author B., ...
 
-## Príklad správneho výstupu
-{{"internal_authors":[{{"name":"Novák, Jan","faculty":"Faculty of Technology","ou":"Department of Polymer Engineering"}}]}}
+## Pr?klad spr?vneho v?stupu
+{{"internal_authors":[{{"name":"Nov?k, Jan","faculty":"Faculty of Technology","ou":"Department of Polymer Engineering"}}]}}
 """
 
 # Preamble pre Ollama konverzačný režim (KV-cache optimalizácia – načíta sa raz).
@@ -235,6 +251,8 @@ def build_user_message(
     resource_id: int,
     allowed_internal_authors: list[str],
     *,
+    allowed_workplaces: list[str] | None = None,
+    default_attributions: list[dict[str, str]] | None = None,
     repository_authors: list[str] | None = None,
     wos_authors: list[str] | None = None,
     scopus_authors: list[str] | None = None,
@@ -247,34 +265,33 @@ def build_user_message(
     source_tags: list[str] | None = None,
     flags: dict[str, Any] | None = None,
 ) -> str:
-    parts: list[str] = [f"=== Záznam resource_id={resource_id} ==="]
+    parts: list[str] = [f"=== Z?znam resource_id={resource_id} ==="]
 
     if title:
-        parts.append(f"Názov publikácie:\n{title}")
+        parts.append(f"N?zov publik?cie:\n{title}")
     if journal:
-        parts.append(f"Časopis / zdroj:\n{journal}")
+        parts.append(f"?asopis / zdroj:\n{journal}")
     if doi:
         parts.append(f"DOI:\n{doi}")
     if source_tags:
-        parts.append("Zdrojové tagy záznamu:\n" + json.dumps(source_tags, ensure_ascii=False))
+        parts.append("Zdrojov? tagy z?znamu:\n" + json.dumps(source_tags, ensure_ascii=False))
     if repository_authors:
         parts.append(
-            "Zjednotený zoznam autorov v repozitári (dc.contributor.author):\n"
+            "Zjednoten? zoznam autorov v repozit?ri (dc.contributor.author):\n"
             + json.dumps(repository_authors, ensure_ascii=False)
         )
     if wos_authors:
-        parts.append("Autori identifikovaní z WoS:\n" + json.dumps(wos_authors, ensure_ascii=False))
+        parts.append("Autori identifikovan? z WoS:\n" + json.dumps(wos_authors, ensure_ascii=False))
     if scopus_authors:
-        parts.append("Autori identifikovaní zo Scopus:\n" + json.dumps(scopus_authors, ensure_ascii=False))
+        parts.append("Autori identifikovan? zo Scopus:\n" + json.dumps(scopus_authors, ensure_ascii=False))
     if wos_affiliation:
-        parts.append(f"WoS afiliácia (obsahuje mená autorov):\n{wos_affiliation}")
+        parts.append(f"WoS afili?cia (obsahuje men? autorov):\n{wos_affiliation}")
     else:
-        parts.append("WoS afiliácia: (nedostupná)")
-
+        parts.append("WoS afili?cia: (nedostupn?)")
     if scopus_affiliation:
-        parts.append(f"Scopus afiliácia (bez mien, len inštitúcie):\n{scopus_affiliation}")
+        parts.append(f"Scopus afili?cia (m??e obsahova? men? autorov):\n{scopus_affiliation}")
     if fulltext_affiliation:
-        parts.append(f"Fulltext afiliácia:\n{fulltext_affiliation}")
+        parts.append(f"Fulltext afili?cia:\n{fulltext_affiliation}")
 
     if flags:
         relevant = {
@@ -285,22 +302,34 @@ def build_user_message(
                 "multiple_utb_blocks",
                 "wos_parse_warnings",
                 "error",
+                "ambiguous_authors",
+                "attributions",
             )
             if k in flags
         }
         if relevant:
             parts.append(
-                "Kontext z heuristík:\n" + json.dumps(relevant, ensure_ascii=False, indent=2)
+                "Kontext z heurist?k:\n" + json.dumps(relevant, ensure_ascii=False, indent=2)
             )
 
     parts.append(
-        "Povolené mená interných autorov UTB (použi VÝHRADNE tieto mená):\n"
+        "Povolen? men? intern?ch autorov UTB (pou?i V?HRADNE tieto men?):\n"
         + json.dumps(allowed_internal_authors, ensure_ascii=False)
     )
+    if allowed_workplaces:
+        parts.append(
+            "UTB_WORKPLACES ? povolen? n?zvy pracov?sk / OU:\n"
+            + json.dumps(allowed_workplaces, ensure_ascii=False)
+        )
+    if default_attributions:
+        parts.append(
+            "Predvolen? afili?cie intern?ch autorov z registra UTB:\n"
+            + json.dumps(default_attributions, ensure_ascii=False, indent=2)
+        )
 
     parts.append(
-        "Vráť JSON objekt obsahujúci kľúč 'internal_authors' "
-        "so zoznamom identifikovaných interných autorov."
+        "Vr?? JSON objekt obsahuj?ci k??? 'internal_authors' "
+        "so zoznamom identifikovan?ch intern?ch autorov."
     )
 
     return "\n\n".join(parts)
@@ -353,6 +382,64 @@ def _first_value(value: Any) -> str | None:
         return None
     text_value = str(value).strip()
     return text_value or None
+
+
+def _allowed_workplaces_from_tree(workplace_tree: dict[int, Any]) -> list[str]:
+    allowed: list[str] = []
+    seen: set[str] = set()
+    for node in workplace_tree.values():
+        if not node.is_department:
+            continue
+        faculty_node = walk_to_faculty(node.id, workplace_tree)
+        if faculty_node is None:
+            continue
+        if node.name_en in seen:
+            continue
+        seen.add(node.name_en)
+        allowed.append(node.name_en)
+    return sorted(allowed)
+
+
+def _default_affiliation_for_author(author: InternalAuthor, workplace_tree: dict[int, Any]) -> tuple[str, str]:
+    default_faculty = (author.faculty or "").strip()
+    default_ou = ""
+    if author.organization_id is not None:
+        node = workplace_tree.get(int(author.organization_id))
+        if node is not None:
+            default_ou = node.name_en
+            faculty_node = walk_to_faculty(node.id, workplace_tree)
+            if faculty_node is not None and not default_faculty:
+                default_faculty = faculty_node.name_en
+    return default_faculty, default_ou
+
+
+def _default_attributions_for_prompt(
+    allowed_names: list[str],
+    allowed_map: dict[str, InternalAuthor],
+    registry: list[InternalAuthor],
+    workplace_tree: dict[int, Any],
+) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    for allowed_name in allowed_names:
+        author = allowed_map.get(allowed_name)
+        if author is None:
+            match = match_author(
+                allowed_name,
+                registry,
+                settings.author_match_threshold,
+                normalize=True,
+                require_surname_match=True,
+            )
+            if not (match.matched and match.author):
+                continue
+            author = match.author
+        default_faculty, default_ou = _default_affiliation_for_author(author, workplace_tree)
+        result.append({
+            "name": allowed_name,
+            "default_faculty": default_faculty,
+            "default_ou": default_ou,
+        })
+    return result
 
 
 def _history_author_map(
@@ -437,6 +524,7 @@ def _filter_by_registry(
     allowed_names: list[str],
     allowed_map: dict[str, InternalAuthor],
     preferred_by_identity: dict[str, str],
+    allowed_workplaces: set[str] | None = None,
 ) -> LLMResult:
     allowed_name_set = set(allowed_names)
     normalized_entries: list[LLMAuthorEntry] = []
@@ -468,11 +556,16 @@ def _filter_by_registry(
         if preferred_name not in allowed_name_set or identity in seen_identities:
             continue
         seen_identities.add(identity)
-        normalized_entries.append(LLMAuthorEntry(
-            name=preferred_name,
-            faculty=entry.faculty,
-            ou=entry.ou,
-        ))
+        normalized_entries.append(
+            LLMAuthorEntry.model_validate(
+                {
+                    "name": preferred_name,
+                    "faculty": entry.faculty,
+                    "ou": entry.ou,
+                },
+                context={"allowed_workplaces": allowed_workplaces or set()},
+            )
+        )
 
     return LLMResult(internal_authors=normalized_entries)
 
@@ -496,6 +589,7 @@ def process_llm_record(
     flags:       dict      | None,
     session:     LLMSession,
     registry:    list[InternalAuthor],
+    workplace_tree: dict[int, Any],
 ) -> dict:
 
     result: dict = {
@@ -514,6 +608,13 @@ def process_llm_record(
         candidate_names = _select_candidates(registry, unmatched, max_candidates=80)
         allowed_map = {}
         preferred_by_identity = {}
+    allowed_workplaces = _allowed_workplaces_from_tree(workplace_tree)
+    default_attributions = _default_attributions_for_prompt(
+        candidate_names,
+        allowed_map,
+        registry,
+        workplace_tree,
+    )
 
     wos_text    = "\n---\n".join(str(i) for i in (wos_aff or []) if i) or None
     scopus_text = "; ".join(str(i) for i in (scopus_aff or []) if i) or None
@@ -522,6 +623,8 @@ def process_llm_record(
     user_msg = build_user_message(
         resource_id=resource_id,
         allowed_internal_authors=candidate_names,
+        allowed_workplaces=allowed_workplaces,
+        default_attributions=default_attributions,
         repository_authors=[str(name).strip() for name in (repo_authors or []) if str(name).strip()],
         wos_authors=[str(name).strip() for name in (wos_authors or []) if str(name).strip()],
         scopus_authors=[str(name).strip() for name in (scopus_authors or []) if str(name).strip()],
@@ -542,13 +645,17 @@ def process_llm_record(
         try:
             raw_output  = session.ask(user_msg)
             parsed_dict = parse_llm_json_output(raw_output)
-            llm_result  = LLMResult(**parsed_dict)
+            llm_result  = LLMResult.model_validate(
+                parsed_dict,
+                context={"allowed_workplaces": set(allowed_workplaces)},
+            )
             llm_result  = _filter_by_registry(
                 llm_result,
                 registry,
                 candidate_names,
                 allowed_map,
                 preferred_by_identity,
+                set(allowed_workplaces),
             )
 
             authors = [e.name for e in llm_result.internal_authors]
@@ -599,6 +706,7 @@ def run_llm(
     llm_client = get_llm_client(provider)
     session    = create_authors_session(llm_client)
     registry   = get_author_registry()
+    workplace_tree = load_workplace_tree()
 
     statuses = [LLMStatus.NOT_PROCESSED, LLMStatus.ERROR]
     if reprocess:
@@ -697,6 +805,7 @@ def run_llm(
                 flags=row.author_flags or {},
                 session=session,
                 registry=registry,
+                workplace_tree=workplace_tree,
             )
             updates.append(u)
             status = u["author_llm_status"]

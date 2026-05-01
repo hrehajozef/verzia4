@@ -361,24 +361,56 @@ window.toggleRecordGroup = function (headingEl) {
 <div class="d-flex align-items-center justify-content-between mb-3">
   <div>
     <h4 class="mb-0">Záznamy na kontrolu</h4>
-    <small class="text-muted">Celkom neskontrolovaných: <strong>{{ total }}</strong></small>
+    <small class="text-muted">
+      {% if show_approved %}
+      Celkom zobrazených: <strong>{{ total }}</strong>
+      {% else %}
+      Celkom neskontrolovaných: <strong>{{ total }}</strong>
+      {% endif %}
+    </small>
   </div>
 
   <!-- Zoradenie – HTMX mení len zoznam bez reloadu stránky -->
-  <div class="d-flex align-items-center gap-2">
+  <div class="d-flex align-items-center gap-3 flex-wrap">
+    <form method="get" class="mb-0">
+      <input type="hidden" name="sort" value="{{ sort }}">
+      <label class="d-flex align-items-center gap-2 mb-0 small text-muted">
+        <input type="checkbox"
+               class="form-check-input"
+               name="show_approved"
+               value="1"
+               {% if show_approved %}checked{% endif %}
+               onchange="this.form.submit()">
+        Zobraziť schválené
+      </label>
+    </form>
     <span class="text-muted small">Zoradiť:</span>
     {% for key, label in sort_labels.items() %}
     <button
       class="btn btn-sm {% if sort == key %}btn-utb{% else %}btn-outline-secondary{% endif %}"
       data-sort-key="{{ key }}"
-      hx-get="/?sort={{ key }}"
+      hx-get="/?sort={{ key }}{% if show_approved %}&show_approved=1{% endif %}"
       hx-target="#groups-container"
       hx-swap="innerHTML"
-      hx-push-url="/?sort={{ key }}"
+      hx-push-url="/?sort={{ key }}{% if show_approved %}&show_approved=1{% endif %}"
     >{{ label }}</button>
     {% endfor %}
   </div>
 </div>
+
+{% if bootstrap_needed %}
+<div class="alert alert-warning" role="alert">
+  {{ bootstrap_message }}
+  <a class="alert-link" href="/settings/pipeline">Otvoriť nastavenia pipeline</a>.
+</div>
+{% endif %}
+
+{% if fetch_error %}
+<div class="alert alert-danger" role="alert" style="white-space:pre-wrap;">
+  <strong>Chyba pri načítaní záznamov:</strong>
+  {{ fetch_error }}
+</div>
+{% endif %}
 
 <!-- Search bar -->
 <div class="mb-4 position-relative" id="search-section">
@@ -510,7 +542,7 @@ window.toggleRecordGroup = function (headingEl) {
           {% for child in rec.merged_children %}
           {% set child_voliss = (child.volume or '') + ('/' + child.issue if child.issue else '') if child.volume else (child.issue or '') %}
           <tr class="duplicate-child-row">
-            <td class="text-muted small" title="Povodny zluceny zaznam">⬑ {{ child.resource_id }}</td>
+            <td class="text-muted small" title="Pôvodný zlúčený záznam">⬑ <a href="{{ url_for('records.record_history_detail', row_ref=child.history_row_ref) }}" class="text-decoration-none">{{ child.resource_id }}</a></td>
             <td style="word-break:break-word;">
               <div>{{ child.title or '(bez nazvu)' }}</div>
               <div class="small text-muted mt-1">{{ child.summary }}</div>

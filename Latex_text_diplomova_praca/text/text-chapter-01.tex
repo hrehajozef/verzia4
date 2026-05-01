@@ -1,0 +1,36 @@
+% Kapitola 1: Kontext a motivácia
+% Stav: finálna verzia
+
+\section{Kontext a motivácia}
+
+\subsection{Akademický repozitár univerzitnej knižnice}
+
+Inštitucionálny repozitár (akademický repozitár) predstavuje dôležitú súčasť informačnej infraštruktúry vysokej školy. Neplní iba archivačnú funkciu, ale vytvára aj prostredie pre dlhodobé uchovávanie, sprístupňovanie, indexáciu a opakované využívanie vedeckých výstupov a ich metadát. Súčasne slúži ako jeden z bodov prepojenia medzi lokálnymi informačnými systémami univerzity a širšou sieťou otvorenej vedeckej komunikácie. Aktuálne odporúčania pre repozitáre kladú dôraz najmä na kvalitu popisu, interoperabilitu, použitie perzistentných identifikátorov a možnosť strojového sprístupnenia metadát externým službám \cite{COARGoodPractices2022,OpenAIREGuidelines4}.
+
+V prostredí univerzitnej knižnice má inštitucionálny repozitár špecifické postavenie aj preto, že jeho kvalita nezávisí iba od technickej platformy, ale vo veľkej miere od kvality vstupných údajov. Knižnica musí pracovať s bibliografickými záznamami, ktoré vznikli v rôznych externých systémoch, riadia sa odlišnými pravidlami zápisu a len čiastočne zodpovedajú lokálnym požiadavkám inštitúcie. To platí najmä pri evidencii publikačnej činnosti interných autorov univerzity, ktorých výstupy môžu byť publikované mimo interných systémov a mimo vydavateľského prostredia UTB. Z pohľadu tejto práce preto inštitucionálny repozitár nevystupuje len ako cieľové úložisko, ale aj ako kontext, ktorý určuje nároky na presnosť, konzistentnosť a kontrolovateľnosť metadát pred ich uložením.
+
+Zároveň platí, že moderný inštitucionálny repozitár nemožno chápať izolovane. Predpokladá sa, že je súčasťou interoperabilnej siete, v ktorej sa metadáta vystavujú štandardizovaným spôsobom a sú ďalej využívané agregátormi, vyhľadávacími službami a nadväzujúcimi informačnými systémami. Z toho vyplýva, že nekvalitné alebo nejednotné lokálne metadáta nepredstavujú iba interný evidenčný problém, ale negatívne ovplyvňujú aj ďalšie použitie záznamov mimo samotnej knižnice.
+
+\subsection{Súčasný stav workflow knižnice UTB}
+
+Východiskom riešeného problému je aktuálny spôsob spracovania publikačných záznamov v knižnici UTB. Záznamy o vedeckých výstupoch interných autorov sú získavané najmä z externých bibliografických databáz Web of Science a Scopus. Obe platformy poskytujú export záznamov do súborových formátov určených na ďalšie spracovanie, pričom používateľ môže voliť rozsah exportovaných polí a typ výstupného formátu \cite{ClarivateWOSExport,ScopusSupport}. Z technického hľadiska ide o praktický spôsob, ako hromadne získať bibliografické údaje bez potreby manuálneho opisovania jednotlivých záznamov.
+
+Samotný export však ešte nepredstavuje stav vhodný na priamy zápis do internej databázy knižnice. V podmienkach UTB preto nasleduje medzikrok, v ktorom sa záznamy prevedú do tabuľkového formátu a prejdú základnou technickou kontrolou. Následne sa spracúvajú v prostredí Google Sheets, kde pracovníci knižnice ručne opravujú a dopĺňajú polia, ktoré sú neúplné, nekonzistentné alebo nezodpovedajú interným pravidlám evidencie. Až po tejto fáze možno údaje uložiť do internej databázy a ďalej s nimi pracovať v lokálnom prostredí univerzity.
+
+Takto nastavený postup má jednu nespornú výhodu: umožňuje rýchlo využiť existujúce externé zdroje a doplniť ich o odbornú kontrolu knihovníka. Súčasne však vytvára proces, v ktorom sa vedľa seba nachádzajú export z komerčnej databázy, medzivrstva v tabuľkovom nástroji a finálny zápis do interného systému. Čím väčšia je rôznorodosť vstupov, tým viac práce sa presúva na manuálnu interpretáciu a korekciu. Táto situácia sa zhoduje aj s metodickým východiskom Mikuleckého, ktorý pri spracovaní metadát vedeckých výstupov uvažuje o prístupe s jasne oddelenými krokmi extrakcie, validácie a následného spracovania \cite{Mikulecky2025}.
+
+\subsection{Problémové miesta a dôvody automatizácie}
+
+Hlavný problém súčasného workflow nespočíva v samotnej dostupnosti dát, ale v ich nejednotnosti a v náročnosti ich následného zosúladenia s lokálnymi požiadavkami. V exportoch z externých databáz sa opakovane objavujú variantné zápisy mien autorov, neúplné alebo nejednotné afiliácie, skrátené či neštandardizované názvy časopisov, nejednoznačné dátumy redakčného procesu a formálne odchýlky v identifikátoroch. Pri záznamoch bez jednoznačného identifikátora navyše vzniká problém s rozpoznaním duplicít voči už evidovaným položkám. Takéto chyby nemožno odstrániť jedným všeobecným pravidlom, pretože ich povaha je čiastočne formálna a čiastočne sémantická.
+
+Manuálne spracovanie týchto situácií je časovo náročné, repetitívne a zle škáluje s rastúcim objemom záznamov. Záťaž pritom nespočíva iba v samotnom prepise údajov, ale aj v opakovanom rozhodovaní, či dva zápisy označujú tú istú osobu, ten istý časopis alebo tú istú publikáciu. Práve táto interpretačná zložka práce je pre knihovnícke workflow najnáročnejšia. Súčasný proces zároveň len obmedzene podporuje auditovateľnosť, teda spätné určenie toho, ktorý údaj bol zmenený, z akého dôvodu a na základe akého typu zásahu.
+
+Dôvod automatizácie preto nemožno redukovať iba na snahu skrátiť čas spracovania. Rovnako dôležitým cieľom je zvýšenie konzistentnosti výsledných záznamov, zníženie závislosti od ad hoc opráv v tabuľkách a vytvorenie pracovného postupu, v ktorom bude možné odlíšiť technickú validáciu, návrh normalizácie a finálne schválenie človekom. Pre potreby knižnice UTB je pritom rozhodujúce, aby takáto podpora neviedla k nekontrolovanému automatickému prepisu záznamov, ale k lepšie riadenému a overiteľnému workflow.
+
+\subsection{Ciele a štruktúra práce}
+
+Cieľom práce je vytvoriť teoretické a metodické východisko pre návrh webovej aplikácie, ktorá podporí evidenciu a normalizáciu metadát vedeckých publikácií knižnice UTB. Teoretická časť sa preto nesústredí na všeobecný opis repozitárov alebo umelej inteligencie, ale na tie koncepty, ktoré budú mať priamy význam pre praktickú časť. Ide najmä o bibliografické metadáta,  kontrolu autorov, dátovú kvalitu, deduplikáciu záznamov, štandardizáciu dátumov podľa mnormy ISO 8601, auditovateľnosť úprav a o využitie veľkých jazykových modelov ako asistívnej vrstvy pri spracovaní nejednotných vstupov.
+
+Práca zároveň vychádza z dvoch dôležitých lokálnych východísk. Prvým je metodický prístup k spracovaniu a vyhodnocovaniu metadát s podporou AI, ktorý rozpracoval Mikulecký \cite{Mikulecky2025}. Druhým je skúsenosť s návrhom webovej aplikácie nad univerzitnými dátami, vrátane dôrazu na roly používateľov, validáciu a prístupové obmedzenia, ktorú dokumentuje Koňařík \cite{Konarik2025}. Teoretická časť preto pripravuje rámec pre riešenie, ktoré nebude chápať LLM ako autonómneho rozhodovateľa, ale ako podporný komponent integrovaný do kontrolovaného pracovného postupu.
+
+Nasledujúca kapitola sa bude venovať metadátam vedeckých výstupov, autoritnej kontrole a externým zdrojom údajov. Tým sa vytvorí terminologický a konceptuálny základ pre neskoršiu analýzu kvality dát, entity resolution a využitia LLM pri normalizácii záznamov.

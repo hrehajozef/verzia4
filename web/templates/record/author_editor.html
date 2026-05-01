@@ -1,0 +1,82 @@
+{% extends "base.html" %}
+
+{% block title %}{% if mode == "edit" %}Úprava UTB autora{% else %}Nový UTB autor{% endif %}{% endblock %}
+
+{% block content %}
+<nav aria-label="breadcrumb" class="mb-3">
+  <ol class="breadcrumb">
+    <li class="breadcrumb-item"><a href="{{ return_to }}">Späť</a></li>
+    <li class="breadcrumb-item active">{% if mode == "edit" %}Úprava autora{% else %}Nový autor{% endif %}</li>
+  </ol>
+</nav>
+
+<div class="d-flex align-items-start justify-content-between mb-3 gap-2 flex-wrap">
+  <div>
+    <h4 class="mb-1">{% if mode == "edit" %}Úprava UTB autora{% else %}Pridanie UTB autora{% endif %}</h4>
+    {% if row_ref %}
+    <div class="small text-muted">Riadok: <span class="font-monospace">{{ row_ref }}</span></div>
+    {% endif %}
+  </div>
+  <a class="btn btn-outline-secondary btn-sm" href="{{ return_to }}">Späť na záznam</a>
+</div>
+
+{% if not author_editor.can_write %}
+<div class="alert alert-warning">
+  Konfigurovaný účet nemá právo zapisovať do <span class="font-monospace">veda.utb_authors</span>.
+</div>
+{% endif %}
+
+{% if error %}
+<div class="alert alert-danger">{{ error }}</div>
+{% endif %}
+
+<form method="post" class="card">
+  <div class="card-body">
+    <input type="hidden" name="row_ref" value="{{ row_ref or '' }}">
+    <input type="hidden" name="return_to" value="{{ return_to }}">
+    <div class="row g-3">
+      {% for column in author_editor.columns %}
+      {% set value = author.get(column.name, '') if author else '' %}
+      <div class="col-md-6">
+        <label class="form-label small fw-semibold" for="author-field-{{ column.name }}">{{ column.label }}</label>
+        {% if column.kind == "select" %}
+        <select class="form-select"
+                id="author-field-{{ column.name }}"
+                name="{{ column.name }}"
+                {% if column.required %}required{% endif %}
+                {% if not author_editor.can_write %}disabled{% endif %}>
+          <option value=""></option>
+          {% for option in column.options %}
+          <option value="{{ option }}" {% if value == option %}selected{% endif %}>{{ option }}</option>
+          {% endfor %}
+        </select>
+        {% else %}
+        <input class="form-control"
+               id="author-field-{{ column.name }}"
+               name="{{ column.name }}"
+               type="{{ 'number' if column.kind == 'number' else 'text' }}"
+               value="{{ value }}"
+               {% if column.required %}required{% endif %}
+               {% if not author_editor.can_write %}disabled{% endif %}>
+        {% endif %}
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+  <div class="card-footer d-flex justify-content-end gap-2">
+    {% if mode == "edit" and author_editor.can_write and row_ref %}
+    <button type="submit"
+            class="btn btn-danger me-auto"
+            formaction="{{ url_for('records.author_editor_delete', row_ref=row_ref) }}"
+            formmethod="post"
+            onclick="return confirm('Naozaj chcete vymazať autora?');">
+      Vymazať autora
+    </button>
+    {% endif %}
+    <a class="btn btn-outline-secondary" href="{{ return_to }}">Zrušiť</a>
+    <button type="submit" class="btn btn-primary" {% if not author_editor.can_write %}disabled{% endif %}>
+      {% if mode == "edit" %}Uložiť autora{% else %}Vytvoriť autora{% endif %}
+    </button>
+  </div>
+</form>
+{% endblock %}

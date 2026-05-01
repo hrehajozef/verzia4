@@ -10,6 +10,9 @@ from typing import Any
 
 from sqlalchemy import text
 
+from src.authors.parsers.scopus import parse_scopus_affiliation_array
+from src.authors.parsers.wos import parse_wos_affiliation_array
+from src.authors.source_authors import _author_key
 from src.authors.source_authors import split_source_author_lists
 from src.common.constants import (
     CZECH_DEPARTMENT_MAP_NORM,
@@ -115,6 +118,16 @@ PRIORITY_FIELDS = [
 
 _AFFILIATION_KEYS = {"utb.wos.affiliation", "utb.scopus.affiliation", "utb.fulltext.affiliation"}
 
+# Poradie afiliačných stĺpcov, ktoré sa vykresľujú v zlúčenom riadku
+# "Affiliation". Riadok zobrazuje pod sebou skutočné názvy DB stĺpcov, ktoré
+# sa zlučujú do jednej bunky.
+_AFFILIATION_LABEL_ORDER: tuple[str, ...] = (
+    "utb.fulltext.affiliation",
+    "utb.wos.affiliation",
+    "utb.scopus.affiliation",
+)
+AFFILIATION_GROUP_LABEL: str = "\n".join(_AFFILIATION_LABEL_ORDER)
+
 # Pre tieto hlavné fieldy sa "proposed" hodnota berie z príslušného queue stĺpca
 # (namiesto zobrazovania queue stĺpca ako samostatného riadku)
 _PROPOSED_FROM_QUEUE: dict[str, str] = {
@@ -156,15 +169,19 @@ _SCOPUS_COL_MAP: dict[str, str] = {
 
 # Interne pipeline polia (z queue tabuľky), nie z hlavnej tabuľky
 QUEUE_FIELDS: dict[str, str] = {
-    "utb_date_received":              "Received",
-    "utb_date_reviewed":              "Reviewed",
-    "utb_date_accepted":              "Accepted",
-    "utb_date_published_online":      "Published online",
-    "utb_date_published":             "Published",
-    # validation_suggested_fixes je aplikovaný per-field inline – nie ako samostatný riadok
+    "utb_date_received":              "D\u00e1tum prijatia z\u00e1znamu",
+    "utb_date_reviewed":              "D\u00e1tum recenzovania",
+    "utb_date_accepted":              "D\u00e1tum prijatia \u010dl\u00e1nku",
+    "utb_date_published_online":      "D\u00e1tum online vydania",
+    "utb_date_published":             "D\u00e1tum vydania tla\u010dou",
+    # validation_suggested_fixes je aplikovan\u00fd per-field inline \u2013 nie ako samostatn\u00fd riadok
 }
 
 # Stĺpce, ktoré sa nezobrazujú ako samostatné riadky (raw JSONB bloby a interné flagy)
+# Detail page zobrazuje skuto\u010dn\u00e9 DB n\u00e1zvy st\u013apcov ako label v st\u013apci Metadata
+# (predt\u00fdm tu bola tabu\u013eka FIELD_LABELS so slovensk\u00fdmi popiskami \u2013 odstr\u00e1nen\u00e9,
+# label pre ka\u017ed\u00fd riadok je teraz priamo n\u00e1zov st\u013apca v DB).
+
 _HIDDEN_FIELDS: set[str] = {
     # Tieto queue stĺpce sa zobrazujú inline v príslušných hlavných riadkoch
     # (cez _PROPOSED_FROM_QUEUE), nie ako samostatné riadky
@@ -425,6 +442,99 @@ def _author_source_values(
     }
 
 
+def _author_modal_data(
+    main_data: dict[str, Any],
+    internal_display: str | None,
+) -> list[dict[str, Any]]:
+    author_names = _split_display_values(_to_display(main_data.get("dc.contributor.author")))
+    internal_keys = {_author_key(name) for name in _split_display_values(internal_display)}
+
+    scopus_aff_by_author: dict[str, str] = {}
+    for parsed in parse_scopus_affiliation_array(main_data.get("utb.scopus.affiliation")):
+        for block in parsed.blocks:
+            if not block.author_name or not block.affiliation:
+                continue
+            scopus_aff_by_author.setdefault(_author_key(block.author_name), block.affiliation)
+
+    wos_aff_by_author: dict[str, str] = {}
+    for parsed in parse_wos_affiliation_array(main_data.get("utb.wos.affiliation")):
+        for block in parsed.blocks:
+            for author_name in block.authors:
+                if not author_name or not block.affiliation_raw:
+                    continue
+                wos_aff_by_author.setdefault(_author_key(author_name), block.affiliation_raw)
+
+    return [
+        {
+            "name": author_name,
+            "is_internal": _author_key(author_name) in internal_keys,
+            "scopus_aff": scopus_aff_by_author.get(_author_key(author_name), ""),
+            "wos_aff": wos_aff_by_author.get(_author_key(author_name), ""),
+        }
+        for author_name in author_names
+    ]
+
+
+def _merged_source_records(resource_id: str, engine=None) -> list[dict[str, Any]]:
+    """Vrati prehlad povodnych zaznamov, ktore vstupili do zl?ceneho zaznamu."""
+    engine = engine or get_local_engine()
+    schema = settings.local_schema
+
+    with engine.connect() as conn:
+        try:
+            rows = conn.execute(text(f"""
+                SELECT
+                    ctid::text AS history_row_ref,
+                    resource_id,
+                    dedup_match_type,
+                    dedup_match_score,
+                    dedup_match_details,
+                    dedup_merged_at,
+                    dedup_kept_resource_id,
+                    dedup_other_resource_id
+                FROM "{schema}"."dedup_histoire"
+                WHERE dedup_kept_resource_id = :rid
+                ORDER BY dedup_merged_at DESC, resource_id ASC
+            """), {"rid": int(resource_id)}).mappings().fetchall()
+        except Exception:
+            rows = []
+
+    merged: list[dict[str, Any]] = []
+    seen_resource_ids: set[str] = set()
+    for row in rows:
+        row_resource_id = str(row["resource_id"])
+        if row_resource_id in seen_resource_ids:
+            continue
+        seen_resource_ids.add(row_resource_id)
+        details = _json_dict(row.get("dedup_match_details"))
+        score = row.get("dedup_match_score")
+        merged.append({
+            "history_row_ref": str(row.get("history_row_ref") or ""),
+            "resource_id": row_resource_id,
+            "kept_resource_id": str(row.get("dedup_kept_resource_id") or ""),
+            "other_resource_id": str(row.get("dedup_other_resource_id") or ""),
+            "match_type": str(row.get("dedup_match_type") or "unknown"),
+            "match_score": float(score) if isinstance(score, (int, float)) else None,
+            "details": details,
+            "merged_at": _to_display(row.get("dedup_merged_at")),
+            "is_kept_original": str(row.get("resource_id")) == str(row.get("dedup_kept_resource_id")),
+        })
+    return merged
+
+
+def _get_history_record_row(history_row_ref: str, engine=None) -> dict[str, Any] | None:
+    """Na??ta jeden konkr?tny historick? riadok z dedup_histoire pod?a ctid."""
+    engine = engine or get_local_engine()
+    schema = settings.local_schema
+    with engine.connect() as conn:
+        row = conn.execute(text(f"""
+            SELECT ctid::text AS history_row_ref, *
+            FROM "{schema}"."dedup_histoire"
+            WHERE ctid::text = :row_ref
+        """), {"row_ref": history_row_ref}).mappings().fetchone()
+    return dict(row) if row else None
+
+
 def get_record_detail(resource_id: str, engine=None) -> dict[str, Any] | None:
     """
     Načíta kompletné dáta záznamu pre detail stránku.
@@ -508,7 +618,7 @@ def get_record_detail(resource_id: str, engine=None) -> dict[str, Any] | None:
 
         ordered_fields.append({
             "key":             "utb.fulltext.affiliation",
-            "label":           "Affiliation",
+            "label":           AFFILIATION_GROUP_LABEL,
             "main":            main_val,
             "proposed":        proposed_val,
             "wos_val":         _to_display(main_data.get("utb.wos.affiliation")),
@@ -573,9 +683,9 @@ def get_record_detail(resource_id: str, engine=None) -> dict[str, Any] | None:
         _add_field(key)
 
     # 3. Queue polia s návrhmi (tie, kde je queue hodnota alebo vsf návrh)
-    for key, label in QUEUE_FIELDS.items():
+    for key in QUEUE_FIELDS:
         if key not in seen:
-            _add_field(key, label)
+            _add_field(key)
 
     return {
         "resource_id": resource_id,
@@ -754,6 +864,7 @@ def _get_record_detail_v2(resource_id: str, engine=None) -> dict[str, Any] | Non
     queue_data = dict(queue_row) if queue_row else {}
     pending_changes = [dict(row) for row in pending_rows]
     pending_map = _pending_change_map(pending_changes)
+    merged_sources = _merged_source_records(resource_id, engine)
 
     effective_main = dict(main_data)
     effective_queue = dict(queue_data)
@@ -799,7 +910,7 @@ def _get_record_detail_v2(resource_id: str, engine=None) -> dict[str, Any] | Non
             seen.add(item)
         ordered_fields.append({
             "key": "utb.fulltext.affiliation",
-            "label": "Affiliation",
+            "label": AFFILIATION_GROUP_LABEL,
             "main": _to_display(effective_main.get("utb.fulltext.affiliation")),
             "proposed": _get_proposed("utb.fulltext.affiliation"),
             "wos_val": _to_display(effective_main.get("utb.wos.affiliation")),
@@ -852,17 +963,128 @@ def _get_record_detail_v2(resource_id: str, engine=None) -> dict[str, Any] | Non
     for key in null_keys:
         _add_field(key)
 
-    for key, label in QUEUE_FIELDS.items():
+    for key in QUEUE_FIELDS:
         if key not in seen:
-            _add_field(key, label)
+            _add_field(key)
 
     return {
         "resource_id": resource_id,
         "main": effective_main,
         "queue": effective_queue,
         "fields": ordered_fields,
+        "author_modal_data": _author_modal_data(
+            effective_main,
+            _get_proposed("utb.contributor.internalauthor"),
+        ),
         "checked_at": effective_queue.get("librarian_checked_at"),
         "pending_changes": pending_changes,
+        "merged_sources": merged_sources,
+        "read_only": False,
+        "is_history": False,
+    }
+
+
+def get_history_record_detail(history_row_ref: str, engine=None) -> dict[str, Any] | None:
+    """Load read-only detail for one archived row in dedup_histoire."""
+    engine = engine or get_local_engine()
+    schema = settings.local_schema
+    history_row = _get_history_record_row(history_row_ref, engine=engine)
+    if not history_row:
+        return None
+
+    main_columns = _load_table_columns(engine, schema, settings.local_table)
+    main_data = {key: history_row.get(key) for key in main_columns.keys() if key in history_row}
+    author_source_values = _author_source_values(str(history_row.get("resource_id") or ""), main_data, engine)
+
+    seen: set[str] = set()
+    ordered_fields: list[dict] = []
+    affiliation_added = False
+
+    def _field_exists(key: str) -> bool:
+        return key in main_columns or key in _AFFILIATION_KEYS
+
+    def _add_affiliation_group() -> None:
+        nonlocal affiliation_added
+        if affiliation_added:
+            return
+        affiliation_added = True
+        for item in _AFFILIATION_KEYS:
+            seen.add(item)
+        ordered_fields.append({
+            "key": "utb.fulltext.affiliation",
+            "label": AFFILIATION_GROUP_LABEL,
+            "main": _to_display(main_data.get("utb.fulltext.affiliation")),
+            "proposed": None,
+            "wos_val": _to_display(main_data.get("utb.wos.affiliation")),
+            "wos_field_key": None,
+            "scopus_val": _to_display(main_data.get("utb.scopus.affiliation")),
+            "scopus_field_key": None,
+            "is_queue": False,
+        })
+
+    def _add_field(key: str, label: str | None = None) -> None:
+        if key in seen or not _field_exists(key):
+            return
+        if key in _AFFILIATION_KEYS:
+            _add_affiliation_group()
+            return
+        seen.add(key)
+        if key in _HIDDEN_FIELDS:
+            return
+
+        wos_fk = _WOS_COL_MAP.get(key)
+        scopus_fk = _SCOPUS_COL_MAP.get(key)
+        wos_val = _to_display(main_data.get(wos_fk)) if wos_fk else None
+        scopus_val = _to_display(main_data.get(scopus_fk)) if scopus_fk else None
+        if key == "dc.contributor.author":
+            wos_val = author_source_values["wos"]
+            scopus_val = author_source_values["scopus"]
+
+        ordered_fields.append({
+            "key": key,
+            "label": label or key,
+            "main": _main_display_value(main_data, key),
+            "proposed": None,
+            "wos_val": wos_val,
+            "wos_field_key": None,
+            "scopus_val": scopus_val,
+            "scopus_field_key": None,
+            "is_queue": False,
+        })
+
+    for key in get_detail_row_order():
+        _add_field(key)
+
+    all_main_keys = list(main_data.keys())
+    non_null = [key for key in all_main_keys if key not in seen and main_data.get(key) is not None]
+    null_keys = [key for key in all_main_keys if key not in seen and main_data.get(key) is None]
+    for key in non_null:
+        _add_field(key)
+    for key in null_keys:
+        _add_field(key)
+
+    return {
+        "resource_id": str(history_row.get("resource_id") or ""),
+        "main": main_data,
+        "queue": {},
+        "fields": ordered_fields,
+        "author_modal_data": _author_modal_data(
+            main_data,
+            _to_display(main_data.get("utb.contributor.internalauthor")),
+        ),
+        "checked_at": None,
+        "pending_changes": [],
+        "merged_sources": [],
+        "read_only": True,
+        "is_history": True,
+        "history_row_ref": str(history_row.get("history_row_ref") or ""),
+        "history_info": {
+            "kept_resource_id": str(history_row.get("dedup_kept_resource_id") or ""),
+            "other_resource_id": str(history_row.get("dedup_other_resource_id") or ""),
+            "match_type": str(history_row.get("dedup_match_type") or "unknown"),
+            "match_score": float(history_row["dedup_match_score"]) if isinstance(history_row.get("dedup_match_score"), (int, float)) else None,
+            "merged_at": _to_display(history_row.get("dedup_merged_at")),
+        },
     }
 
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,9 +20,16 @@ from src.authors.parsers.wos import (
 )
 from src.authors.registry import (
     InternalAuthor,
+    _candidate_signatures,
     get_author_registry,
     lookup_author_affiliations,
     match_author,
+)
+from src.authors.workplace_tree import (
+    WorkplaceNode,
+    find_workplace_by_name,
+    load_workplace_tree,
+    walk_to_faculty,
 )
 from src.authors.source_authors import merge_author_lists, split_source_author_lists
 from src.common.constants import (
@@ -42,6 +50,21 @@ HEURISTIC_VERSION = "4.2.0"
 
 _DEPT_PREFIXES = ("dept", "ctr ", "inst ", "lab ", "centre", "center", "language", "res ctr")
 _MIN_STRONG_FUZZY_SCORE = 0.90
+
+
+@dataclass
+class AuthorAttribution:
+    matched_author: InternalAuthor | None
+    display_name: str
+    per_paper_faculty: str = ""
+    per_paper_ou: str = ""
+    per_paper_source: str = ""
+    per_paper_confidence: float = 0.0
+    default_faculty: str = ""
+    default_ou: str = ""
+    scopus_raw_affiliation: str = ""
+    wos_raw_affiliation: str = ""
+    flags: dict[str, Any] = field(default_factory=dict)
 
 
 def _keyword_score(keyword: str) -> int:
@@ -85,7 +108,7 @@ def _collect_affiliation_hints(
 
     for parsed in parse_scopus_affiliation_array(scopus_aff_arr):
         for block in parsed.utb_blocks:
-            faculty, ou = resolve_faculty_and_ou(block.raw)
+            faculty, ou = resolve_faculty_and_ou(block.affiliation)
             if faculty or ou:
                 hints.append((faculty, ou, "scopus"))
 
@@ -102,6 +125,50 @@ def _collect_affiliation_hints(
                 hints.append((faculty, ou, "fulltext"))
 
     return list(dict.fromkeys(hints))
+
+
+def _collect_author_specific_hints(
+    scopus_results: list[Any],
+    parsed_wos_results: list[Any],
+) -> dict[str, list[tuple[str, str, str]]]:
+    """Collect affiliation hints keyed by concrete source author names."""
+    hints_by_author: dict[str, list[tuple[str, str, str]]] = {}
+
+    def add_hint(author_name: str, faculty: str, ou: str, source: str) -> None:
+        if not author_name or not (faculty or ou):
+            return
+        key = normalize_text(author_name)
+        if not key:
+            return
+        hints_by_author.setdefault(key, [])
+        hint = (faculty, ou, source)
+        if hint not in hints_by_author[key]:
+            hints_by_author[key].append(hint)
+
+    for parsed in scopus_results:
+        for block in parsed.utb_blocks:
+            if not block.author_name:
+                continue
+            faculty, ou = resolve_faculty_and_ou(block.affiliation)
+            add_hint(block.author_name, faculty, ou, "scopus")
+
+    for parsed in parsed_wos_results:
+        for block in parsed.utb_blocks:
+            faculty, ou = resolve_faculty_and_ou(block.affiliation_raw)
+            if not ou:
+                candidates = extract_ou_candidates(block.affiliation_raw)
+                ou = candidates[0] if candidates else ""
+            for author_name in block.authors:
+                add_hint(author_name, faculty, ou, "wos")
+
+    return hints_by_author
+
+
+def _author_candidate_hints(
+    author_name: str,
+    author_specific_hints: dict[str, list[tuple[str, str, str]]],
+) -> list[tuple[str, str, str]]:
+    return author_specific_hints.get(normalize_text(author_name), [])
 
 
 def _choose_affiliation_from_hints(
@@ -179,6 +246,227 @@ def _preferred_repo_author_names(
     return preferred
 
 
+def _resolve_author_candidate_match(
+    candidate_name: str,
+    registry: list[InternalAuthor],
+    *,
+    normalize: bool,
+    hint_faculties: list[str],
+    low_confidence_matches: list[dict[str, Any]],
+    require_surname_match: bool,
+) -> Any | None:
+    match = match_author(
+        candidate_name,
+        registry,
+        settings.author_match_threshold,
+        normalize=normalize,
+        require_surname_match=require_surname_match,
+    )
+    if not (match.matched and match.author):
+        return None
+
+    if match.match_type == "fuzzy" and match.score < _MIN_STRONG_FUZZY_SCORE:
+        low_confidence_matches.append({
+            "input": candidate_name,
+            "matched": match.author.full_name,
+            "score": round(match.score, 4),
+            "accepted": False,
+        })
+        return None
+
+    if (
+        match.match_type == "fuzzy"
+        and len(hint_faculties) == 1
+        and match.author.faculty
+        and hint_faculties[0] != match.author.faculty
+    ):
+        low_confidence_matches.append({
+            "input": candidate_name,
+            "matched": match.author.full_name,
+            "score": round(match.score, 4),
+            "accepted": False,
+            "reason": "affiliation_conflict",
+        })
+        return None
+
+    if match.match_type == "fuzzy":
+        low_confidence_matches.append({
+            "input": candidate_name,
+            "matched": match.author.full_name,
+            "score": round(match.score, 4),
+            "accepted": True,
+        })
+
+    return match
+
+
+def _default_author_affiliation(
+    author: InternalAuthor,
+    workplace_tree: dict[int, WorkplaceNode] | None,
+    remote_engine: Engine | None,
+) -> tuple[str, str]:
+    default_faculty = (author.faculty or "").strip()
+    default_ou = ""
+
+    if workplace_tree and author.organization_id is not None:
+        node = workplace_tree.get(int(author.organization_id))
+        if node:
+            default_ou = node.name_en
+            faculty_node = walk_to_faculty(node.id, workplace_tree)
+            if not default_faculty and faculty_node:
+                default_faculty = faculty_node.name_en
+
+    if not default_faculty or not default_ou:
+        db_faculties, db_ou = lookup_author_affiliations(
+            author.surname,
+            author.firstname,
+            remote_engine,
+        )
+        if not default_faculty and db_faculties:
+            default_faculty = db_faculties[0]
+        if not default_ou and db_ou:
+            default_ou = db_ou
+
+    return default_faculty, default_ou
+
+
+def _collect_author_affiliation_texts(
+    scopus_results: list[Any],
+    parsed_wos_results: list[Any],
+) -> list[dict[str, Any]]:
+    per_author: dict[str, dict[str, Any]] = {}
+
+    def add(source: str, author_name: str, raw_affiliation: str) -> None:
+        key = normalize_text(author_name)
+        if not key or not raw_affiliation:
+            return
+        bucket = per_author.setdefault(
+            key,
+            {
+                "author_name": author_name,
+                "signatures": set(_candidate_signatures(author_name)),
+                "scopus": [],
+                "wos": [],
+            },
+        )
+        if raw_affiliation not in bucket[source]:
+            bucket[source].append(raw_affiliation)
+
+    for parsed in scopus_results:
+        for block in parsed.utb_blocks:
+            if block.author_name and block.affiliation:
+                add("scopus", block.author_name, block.affiliation)
+
+    for parsed in parsed_wos_results:
+        for block in parsed.utb_blocks:
+            for author_name in block.authors:
+                if author_name and block.affiliation_raw:
+                    add("wos", author_name, block.affiliation_raw)
+
+    return list(per_author.values())
+
+
+def _author_affiliations_for_candidate(
+    candidate_name: str,
+    author_aff_texts: list[dict[str, Any]],
+) -> dict[str, list[str]]:
+    candidate_key = normalize_text(candidate_name)
+    candidate_signatures = set(_candidate_signatures(candidate_name))
+    merged = {"scopus": [], "wos": []}
+    for entry in author_aff_texts:
+        if entry["author_name"] and normalize_text(entry["author_name"]) == candidate_key:
+            for source in ("scopus", "wos"):
+                for value in entry[source]:
+                    if value not in merged[source]:
+                        merged[source].append(value)
+            continue
+        if candidate_signatures and entry["signatures"] & candidate_signatures:
+            for source in ("scopus", "wos"):
+                for value in entry[source]:
+                    if value not in merged[source]:
+                        merged[source].append(value)
+    return merged
+
+
+def _match_workplace_from_affiliations(
+    raw_affiliations: list[str],
+    workplace_tree: dict[int, WorkplaceNode] | None,
+) -> tuple[WorkplaceNode | None, float, str]:
+    if not workplace_tree:
+        return None, 0.0, ""
+    def specificity(node: WorkplaceNode | None) -> tuple[int, int]:
+        if node is None:
+            return (-1, -1)
+        if node.is_department:
+            level = 2
+        elif node.name_en.startswith("Faculty of ") or node.name_en == "University Institute":
+            level = 1
+        else:
+            level = 0
+        return level, len(node.name_en or node.name_cs or "")
+
+    best_node: WorkplaceNode | None = None
+    best_score = 0.0
+    best_raw = ""
+    for raw_affiliation in raw_affiliations:
+        candidates = [raw_affiliation]
+        candidates.extend(
+            fragment.strip()
+            for fragment in re.split(r"[,;]", raw_affiliation)
+            if fragment and fragment.strip()
+        )
+        for candidate in candidates:
+            node, score = find_workplace_by_name(candidate, workplace_tree)
+            if node is None:
+                continue
+            if score > best_score or (
+                score == best_score and specificity(node) > specificity(best_node)
+            ):
+                best_node = node
+                best_score = score
+                best_raw = raw_affiliation
+    if best_node is not None and specificity(best_node)[0] <= 0:
+        return None, 0.0, ""
+    return best_node, best_score, best_raw
+
+
+def _serialize_attribution(attribution: AuthorAttribution) -> dict[str, Any]:
+    data = asdict(attribution)
+    data["matched_author"] = (
+        {
+            "author_id": attribution.matched_author.limited_author_id,
+            "utbid": attribution.matched_author.utb_id,
+            "display_name": attribution.matched_author.display_name,
+            "canonical_name": attribution.matched_author.canonical_name,
+            "organization_id": attribution.matched_author.organization_id,
+            "faculty": attribution.matched_author.faculty,
+        }
+        if attribution.matched_author
+        else None
+    )
+    return data
+
+
+def _ambiguity_candidates(candidate_name: str, registry: list[InternalAuthor]) -> list[str]:
+    candidate_norm = normalize_text(candidate_name)
+    parts = [part for part in candidate_norm.replace(",", " ").split() if part]
+    surnames = {parts[0], parts[-1]} if parts else set()
+    candidates: list[str] = []
+    for author in registry:
+        author_names = [normalize_text(value) for value in author.all_names]
+        if any(any(surname and surname in name for surname in surnames) for name in author_names):
+            candidates.append(author.full_name)
+    deduped: list[str] = []
+    seen: set[str] = set()
+    for value in candidates:
+        key = normalize_text(value)
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(value)
+    return deduped
+
+
 def process_record(
     resource_id: int,
     wos_aff_arr: list[str] | None,
@@ -186,13 +474,41 @@ def process_record(
     registry: list[InternalAuthor],
     normalize: bool = False,
     remote_engine: Engine | None = None,
+    workplace_tree: dict[int, WorkplaceNode] | None = None,
     scopus_aff_arr: list[str] | None = None,
     fulltext_aff_arr: list[str] | None = None,
     wos_author_arr: list[str] | None = None,
     scopus_author_arr: list[str] | None = None,
 ) -> dict:
-    combined_authors = merge_author_lists(dc_authors_arr, wos_author_arr, scopus_author_arr)
-    preferred_repo_names = _preferred_repo_author_names(dc_authors_arr, registry, normalize=normalize)
+    scopus_results = parse_scopus_affiliation_array(scopus_aff_arr)
+    scopus_aff_author_names = [
+        block.author_name.strip()
+        for parsed in scopus_results
+        for block in parsed.utb_blocks
+        if block.author_name and block.author_name.strip()
+    ]
+    parsed_wos_results = [
+        parse_wos_affiliation(str(raw_aff), resource_id=resource_id)
+        for raw_aff in (wos_aff_arr or [])
+        if raw_aff
+    ]
+    wos_aff_author_names = [
+        author_str.strip()
+        for parsed in parsed_wos_results
+        for block in parsed.utb_blocks
+        for author_str in block.authors
+        if author_str and author_str.strip()
+    ]
+
+    combined_authors = merge_author_lists(
+        dc_authors_arr,
+        wos_author_arr,
+        scopus_author_arr,
+        scopus_aff_author_names,
+        wos_aff_author_names,
+    )
+    author_aff_texts = _collect_author_affiliation_texts(scopus_results, parsed_wos_results)
+    preferred_repo_names = _preferred_repo_author_names(combined_authors, registry, normalize=normalize)
     result: dict = {
         "resource_id": resource_id,
         "author_heuristic_status": HeuristicStatus.ERROR,
@@ -209,84 +525,28 @@ def process_record(
     try:
         has_wos = bool(wos_aff_arr and any(value for value in wos_aff_arr if value))
 
-        matched_authors: list[str] = []
-        matched_faculties: list[str] = []
-        matched_ous: list[str] = []
-        seen_internal_authors: set[str] = set()
-        ambiguous_faculty_authors: list[dict] = []
         low_confidence_matches: list[dict] = []
-        context_overrides: list[dict] = []
-        affiliation_hints = _collect_affiliation_hints(scopus_aff_arr, fulltext_aff_arr)
-        unique_hint_faculties = list(dict.fromkeys(
-            faculty for faculty, _, _ in affiliation_hints if faculty
-        ))
-
         warnings: list[str] = []
         unmatched_utb: list[str] = []
-        faculty_mismatches: list[dict] = []
         needs_llm = False
-        wos_matches: dict[str, tuple[str, str]] = {}
-        wos_display_names: dict[str, str] = {}
+        ambiguous_authors: list[dict[str, Any]] = []
+        attributions_by_identity: dict[str, AuthorAttribution] = {}
+        ordered_identities: list[str] = []
 
         if has_wos:
             seen_wos_authors: set[str] = set()
-            for raw_aff in wos_aff_arr or []:
-                if not raw_aff:
-                    continue
-                parsed = parse_wos_affiliation(str(raw_aff), resource_id=resource_id)
+            for parsed in parsed_wos_results:
                 warnings.extend(parsed.warnings)
                 if not parsed.ok:
                     needs_llm = True
-
                 for block in parsed.utb_blocks:
-                    wos_faculty, wos_ou = resolve_faculty_and_ou(block.affiliation_raw)
-                    if not wos_ou:
-                        candidates = extract_ou_candidates(block.affiliation_raw)
-                        wos_ou = candidates[0] if candidates else ""
-
                     for author_str in block.authors:
                         norm_author = normalize_text(author_str)
                         if norm_author in seen_wos_authors:
                             continue
                         seen_wos_authors.add(norm_author)
 
-                        match = match_author(
-                            author_str,
-                            registry,
-                            settings.author_match_threshold,
-                            normalize=normalize,
-                        )
-                        if not (match.matched and match.author):
-                            unmatched_utb.append(author_str)
-                            needs_llm = True
-                            continue
-
-                        db_faculties, db_ou = lookup_author_affiliations(
-                            match.author.surname,
-                            match.author.firstname,
-                            remote_engine,
-                        )
-
-                        faculty = wos_faculty or (db_faculties[0] if len(db_faculties) == 1 else "")
-                        if wos_faculty and db_faculties:
-                            wos_fid = FACULTY_ENGLISH_TO_ID.get(wos_faculty)
-                            author_fids = {FACULTY_ENGLISH_TO_ID.get(value) for value in db_faculties} - {None}
-                            if wos_fid and author_fids and wos_fid not in author_fids:
-                                faculty_mismatches.append({
-                                    "author": author_str,
-                                    "wos_faculty": wos_faculty,
-                                    "registry_faculties": list(db_faculties),
-                                })
-
-                        ou = wos_ou or db_ou
-                        identity = _registry_identity(match.author)
-                        wos_matches[identity] = (faculty, ou)
-                        wos_display_names.setdefault(identity, author_str.strip())
-
         author_candidates = combined_authors or []
-        if not author_candidates and wos_matches:
-            author_candidates = list(wos_display_names.values())
-            result["author_dc_names"] = author_candidates
         if not author_candidates:
             result["author_heuristic_status"] = HeuristicStatus.PROCESSED
             flags_empty: dict = {FlagKey.NO_WOS_DATA: True}
@@ -296,8 +556,6 @@ def process_record(
                 flags_empty[FlagKey.PARSE_WARNINGS] = warnings
             if any("Viac UTB blokov" in warning for warning in warnings):
                 flags_empty[FlagKey.MULTIPLE_UTB_BLOCKS] = True
-            if faculty_mismatches:
-                flags_empty[FlagKey.WOS_FACULTY_NOT_IN_REGISTRY] = faculty_mismatches
             result["author_flags"] = flags_empty
             return result
 
@@ -310,103 +568,136 @@ def process_record(
                 continue
             seen_source_authors.add(norm_author)
 
-            match = match_author(
+            resolved = _resolve_author_candidate_match(
                 author_str,
                 registry,
-                settings.author_match_threshold,
                 normalize=normalize,
+                hint_faculties=[],
+                low_confidence_matches=low_confidence_matches,
                 require_surname_match=True,
             )
-            if not (match.matched and match.author):
+            if not resolved:
+                probe = match_author(
+                    author_str,
+                    registry,
+                    settings.author_match_threshold,
+                    normalize=normalize,
+                    require_surname_match=True,
+                )
+                if probe.match_type in {"ambiguous_surname", "ambiguous_initials", "initial_mismatch"}:
+                    ambiguous_authors.append({
+                        "input": author_str,
+                        "match_type": probe.match_type,
+                        "candidates": _ambiguity_candidates(author_str, registry),
+                    })
+                    needs_llm = True
+                continue
+            match_obj = resolved
+            identity = _registry_identity(match_obj.author)
+            if identity in attributions_by_identity:
                 continue
 
-            if match.match_type == "fuzzy" and match.score < _MIN_STRONG_FUZZY_SCORE:
-                low_confidence_matches.append({
-                    "input": author_str,
-                    "matched": match.author.full_name,
-                    "score": round(match.score, 4),
-                    "accepted": False,
-                })
-                continue
-
-            db_faculties, db_ou = lookup_author_affiliations(
-                match.author.surname,
-                match.author.firstname,
+            output_author = preferred_repo_names.get(identity, author_str.strip())
+            default_faculty, default_ou = _default_author_affiliation(
+                match_obj.author,
+                workplace_tree,
                 remote_engine,
             )
+            candidate_affiliations = _author_affiliations_for_candidate(author_str, author_aff_texts)
+            raw_scopus_affiliations = candidate_affiliations.get("scopus", [])
+            raw_wos_affiliations = candidate_affiliations.get("wos", [])
+
+            attribution = AuthorAttribution(
+                matched_author=match_obj.author,
+                display_name=output_author,
+                default_faculty=default_faculty,
+                default_ou=default_ou,
+                scopus_raw_affiliation=" || ".join(raw_scopus_affiliations),
+                wos_raw_affiliation=" || ".join(raw_wos_affiliations),
+            )
+            scopus_node, scopus_score, scopus_raw = _match_workplace_from_affiliations(
+                raw_scopus_affiliations,
+                workplace_tree,
+            )
+            if scopus_node is not None:
+                faculty_node = walk_to_faculty(scopus_node.id, workplace_tree or {})
+                attribution.per_paper_ou = scopus_node.name_en
+                attribution.per_paper_faculty = faculty_node.name_en if faculty_node else ""
+                attribution.per_paper_source = "scopus_verified"
+                attribution.per_paper_confidence = scopus_score
+                attribution.scopus_raw_affiliation = scopus_raw or attribution.scopus_raw_affiliation
+            else:
+                wos_node, wos_score, wos_raw = _match_workplace_from_affiliations(
+                    raw_wos_affiliations,
+                    workplace_tree,
+                )
+                if wos_node is not None:
+                    faculty_node = walk_to_faculty(wos_node.id, workplace_tree or {})
+                    attribution.per_paper_ou = wos_node.name_en
+                    attribution.per_paper_faculty = faculty_node.name_en if faculty_node else ""
+                    attribution.per_paper_source = "wos_verified"
+                    attribution.per_paper_confidence = wos_score
+                    attribution.wos_raw_affiliation = wos_raw or attribution.wos_raw_affiliation
 
             if (
-                match.match_type == "fuzzy"
-                and len(unique_hint_faculties) == 1
-                and db_faculties
-                and unique_hint_faculties[0] not in db_faculties
+                attribution.per_paper_source in {"scopus_verified", "wos_verified"}
+                and attribution.per_paper_faculty
+                and attribution.default_faculty
+                and attribution.per_paper_faculty != attribution.default_faculty
             ):
-                low_confidence_matches.append({
-                    "input": author_str,
-                    "matched": match.author.full_name,
-                    "score": round(match.score, 4),
-                    "accepted": False,
-                    "reason": "affiliation_conflict",
-                })
+                attribution.flags["obd_default_conflict"] = {
+                    "per_paper": attribution.per_paper_faculty,
+                    "default": attribution.default_faculty,
+                }
+
+            attributions_by_identity[identity] = attribution
+            ordered_identities.append(identity)
+
+        attributions = [attributions_by_identity[identity] for identity in ordered_identities]
+
+        dominant_pair: tuple[str, str] | None = None
+        dominant_ratio = 0.0
+        pair_counts: dict[tuple[str, str], int] = {}
+        for attribution in attributions:
+            if attribution.per_paper_source not in {"scopus_verified", "wos_verified"}:
                 continue
-
-            if match.match_type == "fuzzy":
-                low_confidence_matches.append({
-                    "input": author_str,
-                    "matched": match.author.full_name,
-                    "score": round(match.score, 4),
-                    "accepted": True,
-                })
-
-            identity = _registry_identity(match.author)
-            output_author = preferred_repo_names.get(identity, author_str.strip())
-            if identity in seen_internal_authors:
+            pair = (attribution.per_paper_faculty, attribution.per_paper_ou)
+            if not pair[0] or not pair[1]:
                 continue
-            seen_internal_authors.add(identity)
+            pair_counts[pair] = pair_counts.get(pair, 0) + 1
+        if pair_counts and attributions:
+            dominant_pair, dominant_count = max(pair_counts.items(), key=lambda item: item[1])
+            dominant_ratio = dominant_count / len(attributions)
+            if dominant_ratio >= 0.8:
+                for attribution in attributions:
+                    if attribution.per_paper_source:
+                        continue
+                    if attribution.default_faculty and attribution.default_faculty == dominant_pair[0]:
+                        attribution.per_paper_faculty = dominant_pair[0]
+                        attribution.per_paper_ou = dominant_pair[1]
+                        attribution.per_paper_source = "cohort_inference"
+                        attribution.per_paper_confidence = round(0.85 * dominant_ratio, 4)
 
-            wos_match = wos_matches.get(identity)
-            if wos_match:
-                faculty, ou = wos_match
-                used_hint = False
+        for attribution in attributions:
+            if attribution.per_paper_source:
+                continue
+            if attribution.default_faculty or attribution.default_ou:
+                attribution.per_paper_faculty = attribution.default_faculty
+                attribution.per_paper_ou = attribution.default_ou
+                attribution.per_paper_source = "default_fallback"
+                attribution.per_paper_confidence = 0.70
             else:
-                faculty, ou, used_hint = _choose_affiliation_from_hints(db_faculties, db_ou, affiliation_hints)
-                if len(db_faculties) > 1 and not faculty:
-                    ambiguous_faculty_authors.append({
-                        "author": output_author,
-                        "faculties": list(db_faculties),
-                    })
-                if used_hint:
-                    context_overrides.append({
-                        "author": output_author,
-                        "faculty": faculty,
-                        "ou": ou,
-                    })
+                attribution.per_paper_source = "unresolved"
+                attribution.per_paper_confidence = 0.0
+                needs_llm = True
 
-            matched_authors.append(output_author)
-            matched_faculties.append(faculty)
-            matched_ous.append(ou)
+        matched_authors = [attribution.display_name for attribution in attributions]
+        matched_faculties = [attribution.per_paper_faculty for attribution in attributions]
+        matched_ous = [attribution.per_paper_ou for attribution in attributions]
 
         flags_b: dict = {
             FlagKey.MATCHED_UTB_AUTHORS: len(matched_authors),
         }
-        inferred_from_cohort: list[dict] = []
-        unique_matched_faculties = list(dict.fromkeys(value for value in matched_faculties if value))
-        unique_matched_ous = list(dict.fromkeys(value for value in matched_ous if value))
-        if len(unique_matched_faculties) == 1 or len(unique_matched_ous) == 1:
-            for idx, author_name in enumerate(matched_authors):
-                inferred = False
-                if not matched_faculties[idx] and len(unique_matched_faculties) == 1:
-                    matched_faculties[idx] = unique_matched_faculties[0]
-                    inferred = True
-                if not matched_ous[idx] and len(unique_matched_ous) == 1:
-                    matched_ous[idx] = unique_matched_ous[0]
-                    inferred = True
-                if inferred:
-                    inferred_from_cohort.append({
-                        "author": author_name,
-                        "faculty": matched_faculties[idx],
-                        "ou": matched_ous[idx],
-                    })
         if not has_wos:
             flags_b[FlagKey.NO_WOS_DATA] = True
         if unmatched_utb:
@@ -415,25 +706,21 @@ def process_record(
             flags_b[FlagKey.PARSE_WARNINGS] = warnings
         if any("Viac UTB blokov" in warning for warning in warnings):
             flags_b[FlagKey.MULTIPLE_UTB_BLOCKS] = True
-        if faculty_mismatches:
-            flags_b[FlagKey.WOS_FACULTY_NOT_IN_REGISTRY] = faculty_mismatches
-        if ambiguous_faculty_authors:
-            flags_b[FlagKey.MULTIPLE_FACULTIES_AMBIGUOUS] = ambiguous_faculty_authors
         if low_confidence_matches:
             flags_b[FlagKey.PATH_B_LOW_CONFIDENCE] = low_confidence_matches
-        if affiliation_hints:
-            flags_b["affiliation_context_hints"] = [
-                {"faculty": faculty, "ou": ou, "source": source}
-                for faculty, ou, source in affiliation_hints
-            ]
-        if context_overrides:
-            flags_b["affiliation_context_overrides"] = context_overrides
-        if inferred_from_cohort:
-            flags_b["affiliation_inferred_from_cohort"] = inferred_from_cohort
+        if ambiguous_authors:
+            flags_b["ambiguous_authors"] = ambiguous_authors
+        flags_b["attributions"] = [_serialize_attribution(attribution) for attribution in attributions]
+        if dominant_pair and dominant_ratio >= 0.8:
+            flags_b["cohort_inference"] = {
+                "faculty": dominant_pair[0],
+                "ou": dominant_pair[1],
+                "ratio": round(dominant_ratio, 4),
+            }
 
         result.update({
             "author_heuristic_status": HeuristicStatus.PROCESSED,
-            "author_needs_llm": False,
+            "author_needs_llm": needs_llm,
             "author_internal_names": _author_output(matched_authors),
             "author_faculty": _author_output(matched_faculties),
             "author_ou": _author_output(matched_ous),
@@ -454,6 +741,7 @@ def process_batch(
     remote_engine: Engine | None = None,
     source_author_map: dict[int, dict[str, list[str]]] | None = None,
 ) -> list[dict]:
+    workplace_tree = load_workplace_tree(remote_engine=remote_engine)
     return [
         process_record(
             resource_id=row.resource_id,
@@ -462,6 +750,7 @@ def process_batch(
             registry=registry,
             normalize=normalize,
             remote_engine=remote_engine,
+            workplace_tree=workplace_tree,
             scopus_aff_arr=row.scopus_aff,
             fulltext_aff_arr=row.fulltext_aff,
             wos_author_arr=(source_author_map or {}).get(row.resource_id, {}).get("wos"),

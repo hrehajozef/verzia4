@@ -12,7 +12,22 @@ from src.common.constants import QUEUE_TABLE
 from src.config.settings import settings
 from src.db.engines import get_local_engine
 
+
+def local_table_exists(table_name: str, *, schema: str | None = None, engine=None) -> bool:
+    engine = engine or get_local_engine()
+    schema = schema or settings.local_schema
+    try:
+        with engine.connect() as conn:
+            return bool(conn.execute(
+                text("SELECT to_regclass(:qualified) IS NOT NULL"),
+                {"qualified": f"{schema}.{table_name}"},
+            ).scalar_one())
+    except Exception:
+        return False
+
 SORT_OPTIONS = {
+    "id_asc":  ("m.resource_id", "ASC"),
+    "id_desc": ("m.resource_id", "DESC"),
     "oldest":  ('m."dc.date.issued"[1]',  "ASC NULLS LAST"),
     "newest":  ('m."dc.date.issued"[1]',  "DESC NULLS LAST"),
     "journal": ('m."dc.relation.ispartof"[1]', "ASC NULLS LAST"),
@@ -46,6 +61,7 @@ class RecordRow:
     duplicate_matches: list["DuplicateMatch"] = field(default_factory=list)
     merged_children: list["MergedHistoryRow"] = field(default_factory=list)
     merged_summary: str | None = None
+    checked_count: int = field(default=0)
 
 
 @dataclass
@@ -59,6 +75,7 @@ class DuplicateMatch:
 
 @dataclass
 class MergedHistoryRow:
+    history_row_ref: str
     resource_id: str
     title: str | None
     authors: list[str]
@@ -183,6 +200,7 @@ def _attach_duplicate_metadata(records: list[RecordRow], engine) -> None:
             with engine.connect() as conn:
                 history_rows = conn.execute(text(f"""
                     SELECT
+                        ctid::text              AS history_row_ref,
                         resource_id,
                         "dc.title"              AS title_arr,
                         "dc.contributor.author" AS authors_arr,
@@ -207,6 +225,7 @@ def _attach_duplicate_metadata(records: list[RecordRow], engine) -> None:
             details = _json_dict(row.dedup_match_details)
             score = float(row.dedup_match_score) if row.dedup_match_score is not None else None
             child = MergedHistoryRow(
+                history_row_ref=str(row.history_row_ref),
                 resource_id=str(row.resource_id),
                 title=_first(row.title_arr),
                 authors=_to_list(row.authors_arr),
@@ -238,6 +257,10 @@ def _source_flags(source_arr: list[str]) -> tuple[bool, bool, bool]:
         for part in ("riv", "obd", "orig")
     )
     return has_wos, has_scopus, has_riv
+
+
+def _unchecked_sql(alias: str = "q") -> str:
+    return f'COALESCE(array_length({alias}.librarian_checked_at, 1), 0) = 0'
 
 
 def _assign_group(
@@ -299,7 +322,7 @@ def search_records(
         return []
 
     field_sql       = " OR ".join(SEARCH_FIELD_CONDITIONS[f] for f in valid_fields)
-    processed_filter = "" if include_processed else "AND q.librarian_checked_at IS NULL"
+    processed_filter = "" if include_processed else f"AND {_unchecked_sql('q')}"
 
     sql = f"""
         SELECT
@@ -364,13 +387,14 @@ def fetch_pending_records(engine=None) -> list[RecordRow]:
                 m."dc.identifier.doi"      AS doi_arr,
                 m."dc.identifier.issn"     AS issn_arr,
                 m."dc.identifier.isbn"     AS isbn_arr,
+                COALESCE(array_length(q.librarian_checked_at, 1), 0) AS checked_count,
                 q.librarian_modified_at,
                 q.author_flags AS queue_author_flags,
                 m.author_flags AS main_author_flags
             FROM "{schema}"."{table}" m
             JOIN "{schema}"."{queue}" q ON m.resource_id = q.resource_id
             WHERE q.librarian_modified_at IS NOT NULL
-              AND q.librarian_checked_at IS NULL
+              AND { _unchecked_sql('q') }
               AND m.withdrawn = FALSE
             ORDER BY q.librarian_modified_at DESC
         """)).fetchall()
@@ -394,6 +418,7 @@ def fetch_pending_records(engine=None) -> list[RecordRow]:
             doi         = _first(row.doi_arr),
             issn        = _to_list(row.issn_arr),
             isbn        = _to_list(row.isbn_arr),
+            checked_count = int(getattr(row, "checked_count", 0) or 0),
         )
         rec.duplicate_matches = _duplicate_matches(row.queue_author_flags, row.main_author_flags)
         rec.duplicate_ids = _duplicate_ids(rec.duplicate_matches)
@@ -404,7 +429,8 @@ def fetch_pending_records(engine=None) -> list[RecordRow]:
 
 
 def fetch_unchecked_records(
-    sort:   str = "oldest",
+    sort:   str = "id_asc",
+    include_checked: bool = False,
     engine = None,
 ) -> dict[str, list[RecordRow]]:
     """
@@ -416,7 +442,8 @@ def fetch_unchecked_records(
     table  = settings.local_table
     queue  = QUEUE_TABLE
 
-    sort_col, sort_dir = SORT_OPTIONS.get(sort, SORT_OPTIONS["oldest"])
+    sort_col, sort_dir = SORT_OPTIONS.get(sort, SORT_OPTIONS["id_asc"])
+    checked_filter = "" if include_checked else f"AND {_unchecked_sql('q')}"
 
     with engine.connect() as conn:
         rows = conn.execute(text(f"""
@@ -432,11 +459,13 @@ def fetch_unchecked_records(
                 m."dc.identifier.doi"      AS doi_arr,
                 m."dc.identifier.issn"     AS issn_arr,
                 m."dc.identifier.isbn"     AS isbn_arr,
+                COALESCE(array_length(q.librarian_checked_at, 1), 0) AS checked_count,
                 q.author_flags             AS queue_author_flags,
                 m.author_flags             AS main_author_flags
             FROM "{schema}"."{table}" m
             JOIN "{schema}"."{queue}" q ON m.resource_id = q.resource_id
-            WHERE q.librarian_checked_at IS NULL
+            WHERE 1 = 1
+              {checked_filter}
               AND m.withdrawn = FALSE
             ORDER BY {sort_col} {sort_dir}, m.resource_id ASC
         """)).fetchall()
@@ -499,6 +528,7 @@ def fetch_unchecked_records(
             doi         = _first(row.doi_arr),
             issn        = _to_list(row.issn_arr),
             isbn        = _to_list(row.isbn_arr),
+            checked_count = int(getattr(row, "checked_count", 0) or 0),
         )
         rec.duplicate_matches = _duplicate_matches(row.queue_author_flags, row.main_author_flags)
         rec.duplicate_ids = _duplicate_ids(rec.duplicate_matches)

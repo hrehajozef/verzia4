@@ -1,0 +1,140 @@
+% Kapitola 7: Analýza zdrojových dát a požiadavky na aplikáciu
+% Stav: draft
+
+\section{Analýza zdrojových dát a požiadavky na aplikáciu}
+
+Praktická časť práce nadväzuje na teoretické vymedzenie problému z predchádzajúcich kapitol a smeruje k návrhu konkrétneho riešenia pre knižnicu UTB. Aby tento návrh nebol odtrhnutý od reálnych obmedzení, je potrebné najprv presne opísať, s akými dátami a v akom prostredí bude aplikácia pracovať. Táto kapitola preto identifikuje vstupné zdroje, analyzuje súčasný spôsob práce knihovníkov a formuluje funkčné a nefunkčné požiadavky, voči ktorým bude možné neskôr vyhodnotiť úspešnosť navrhnutého riešenia. Súčasťou je aj vedomé vymedzenie hraníc projektu, teda toho, čo aplikácia podporovať bude a čo zámerne nepokrýva.
+
+\subsection{Vstupné zdroje dát}
+
+Aplikácia spracúva metadáta publikačných záznamov, ktoré pochádzajú z viacerých systémov s odlišnou povahou, štruktúrou a kvalitou. Ich rozdelenie je dôležité, pretože v ďalších kapitolách bude každý zdroj plniť odlišnú rolu pri normalizácii, validácii a rozhodovaní o identite záznamov. Tabuľka~\ref{tab:vstupne-zdroje} sumarizuje jednotlivé zdroje, ich formát, spôsob prístupu a rolu, ktorú v workflow plnia. Podrobnejší popis nasleduje v podkapitolách.
+
+\begin{table}[h]
+\centering
+\caption{Prehľad vstupných zdrojov dát aplikácie.}
+\label{tab:vstupne-zdroje}
+\begin{tabular}{|p{3.2cm}|p{2.6cm}|p{3.2cm}|p{4.2cm}|}
+\hline
+\textbf{Zdroj} & \textbf{Formát} & \textbf{Prístup} & \textbf{Rola v workflow} \\
+\hline
+Web of Science & CSV, Excel & manuálny export z webu & primárny vstup metadát \\
+\hline
+Scopus & CSV & manuálny export z webu & primárny vstup metadát \\
+\hline
+Repozitár UTB (\texttt{utb\_metadata\_arr}) & PostgreSQL & čítanie a zápis po schválení & cieľové úložisko, referenčný stav pre dedup. \\
+\hline
+\texttt{utb\_authors\_limited} & PostgreSQL & čítanie & autoritatívny register interných autorov \\
+\hline
+\texttt{utb\_authors} & PostgreSQL & čítanie a zápis & rozšírený editovateľný register \\
+\hline
+OBD (\texttt{obd\_publikace}) & PostgreSQL & čítanie & overenie existencie OBDID \\
+\hline
+Crossref REST API & JSON cez HTTP & čítanie & externé overenie a doplnenie \\
+\hline
+\end{tabular}
+\end{table}
+
+\subsubsection{Externé bibliografické databázy}
+
+Hlavnými vstupnými zdrojmi sú Web of Science a Scopus. Obe platformy umožňujú používateľovi vyexportovať bibliografické záznamy v tabuľkovom formáte, pričom je možné voliť rozsah polí a typ výstupného súboru \cite{ClarivateWOSExport,ScopusSupport}. Knižnica UTB pracuje predovšetkým s exportmi do CSV a Excel a tieto súbory sú v ďalšom workflow chápané ako prvá vrstva surových dát. Záznamy v nich sú formálne štruktúrované, avšak medzi sebou sa líšia v zápise mien autorov, v reprezentácii afiliácií aj v podobe identifikátorov. Pri tom istom diele teda môžu existovať dva mierne odlišné záznamy, jeden z WoS a druhý zo Scopusu, ktoré sa musia v lokálnom prostredí zlúčiť do jedného autoritatívneho záznamu.
+
+\subsubsection{Interný repozitár publikácií UTB}
+
+Druhým zdrojom je samotný interný repozitár knižnice UTB, ktorý je technicky postavený na databáze PostgreSQL. Pre potreby tejto práce sú podstatné najmä tabuľky s metadátovými poľami záznamov, kde sú uložené hodnoty získané z predchádzajúcich importov. Ide o pole, ktoré z jednej strany predstavuje cieľové úložisko (sem sa po schválení knihovníkom zapisujú konečné hodnoty) a z druhej strany aj referenčný stav (existujúce záznamy slúžia pri deduplikácii ako zdroj porovnávania). V repozitári sa používa konvencia stĺpcov v tvare \texttt{dc.*} pre štandardné metadáta podľa Dublin Core a \texttt{utb.*} pre lokálne rozšírenia, napríklad \texttt{utb.wos.affiliation}, \texttt{utb.scopus.affiliation} alebo \texttt{utb.fulltext.dates}.
+
+\subsubsection{Lokálne autoritatívne registre}
+
+Pre identifikáciu interných autorov sa využíva tabuľka \texttt{utb\_authors\_limited}, ktorá obsahuje preddefinované varianty mien zamestnancov UTB v jednotnom kontrolovanom tvare. Okrem nej je k dispozícii rozšírený register \texttt{utb\_authors}, ktorý umožňuje doplňujúcu evidenciu vrátane ďalších identifikátorov. Z dátového hľadiska majú obe tabuľky charakter autoritatívneho záznamu osoby \cite{FRAD2013}: textové pole s menom slúži na vyhľadávanie, no skutočnou referenčnou jednotkou je interný identifikátor osoby. Vstupom pre rozhodnutie, či konkrétny autor záznamu je interným autorom UTB, je zhoda na úrovni týchto registrov, nie len výskyt mena v textovom poli.
+
+Súvisiacim zdrojom je systém OBD, ktorý spravuje organizačnú štruktúru fakúlt, ústavov a pracovísk. V kontexte tejto práce poskytuje OBD aktuálne väzby zamestnanec-pracovisko a slúži ako referenčný rámec pri normalizácii afiliácií na konkrétnu fakultu a ústav.
+
+\subsubsection{Externé otvorené služby}
+
+Doplnkovým zdrojom je Crossref, ktorý poskytuje verejne dostupné REST API s bibliografickými metadátami k DOI, periodikám aj jednotlivým dielam \cite{CrossrefRESTAPI}. V navrhovanom workflow neslúži ako primárny importný kanál, ale ako referenčný zdroj pre overenie a doplnenie hodnôt, najmä pri normalizácii časopisov a pri kontrole formálnej správnosti DOI. Crossref zároveň deklaruje, že väčšina jeho bibliografických metadát je voľne použiteľná \cite{CrossrefMetadataRetrieval}, čo znižuje právne riziká pri jeho zaradení do lokálneho spracovania.
+
+\subsection{Analýza pôvodného workflow knižnice UTB}
+
+Pred zavedením navrhovanej aplikácie pracovala knižnica UTB s publikačnými záznamami v postupnosti, ktorú možno rozdeliť do troch krokov. V prvom kroku boli záznamy vyexportované zo Scopusu a Web of Science do tabuľkového formátu. V druhom kroku prebiehala technická kontrola hrubých chýb a importérske spracovanie. V treťom kroku pracovníci knižnice v prostredí Google Sheets ručne dopĺňali a opravovali polia, ktoré boli neúplné, nekonzistentné alebo nezodpovedali interným pravidlám evidencie. Až po tomto kroku sa údaje ukladali do internej databázy. Tento postup je dlhodobo pragmatický, no jeho slabiny sú zrejmé z empirických pozorovaní pri spolupráci s pracovníkmi knižnice a zo systematickej analýzy príbuzných workflow \cite{Mikulecky2025}.
+
+Z opakovaných pozorovaní vychádzajú štyri kategórie problémov. Prvou je menová nejednoznačnosť autorov: tá istá osoba sa môže v rôznych zdrojoch objaviť ako „Belas, Jaroslav", „Belás, Jaroslav" alebo so skrátenou iniciálou. Druhou je formátovanie dátumov, kde sa popri ISO formátoch vyskytujú aj americké zápisy v tvare MDR alebo voľný text v poli \texttt{utb.fulltext.dates}. Treťou je nejednotné označovanie časopisov, kde sa rovnaký časopis objavuje s plným aj skráteným názvom, prípadne bez zhody v ISSN. Štvrtou kategóriou sú duplicity vznikajúce kombináciou exportov z WoS a zo Scopusu, kde dva záznamy popisujú tú istú publikáciu, no líšia sa v drobnostiach.
+
+Spoločnou črtou týchto problémov je, že ich nemožno vyriešiť jediným pravidlom. Časť opráv je formálna a deterministická, časť vyžaduje porovnanie s externým zdrojom a časť je interpretačná, pretože medzi dvomi rôzne zapísanými hodnotami treba rozhodnúť, či označujú tú istú entitu, alebo nie. Dôsledkom je, že manuálne spracovanie v Sheets je časovo náročné, repetitívne a slabo škálovateľné, pričom súčasne nemá podporu pre auditovateľnosť: pri pohľade na finálny záznam nie je možné spätne určiť, či konkrétna hodnota pochádza priamo z exportu, alebo bola doplnená rozhodnutím knihovníka.
+
+Nejednotnosť reprezentácie ilustruje konkrétny záznam jednej publikácie tak, ako sa objavil v exporte z Web of Science, v exporte zo Scopusu a po normalizácii v repozitári UTB (Obr.~\ref{fig:author-variants}). Z príkladu je vidno, že každý zo zdrojov ukladá rovnaké informácie iným spôsobom. Web of Science zoskupuje autorov priamo s ich afiliáciou do jedného poľa pomocou hranatých zátvoriek, Scopus eviduje len afiliácie ako samostatný zoznam bez priameho previazania na konkrétne meno autora a repozitár drží mená autorov v normalizovanej podobe oddelené reťazcom \texttt{||}. K štruktúrnym rozdielom sa pripája aj odlišné nakladanie s diakritikou: oba exporty ju v menách aj v názvoch inštitúcií strácajú, kým repozitár ju zachováva vrátane špeciálnych znakov, napríklad mena \texttt{Çera}. Tento jeden záznam tak zachytáva menovú nejednoznačnosť autorov a zároveň ukazuje, prečo aplikácia musí vedieť zladiť tie isté údaje uložené v rôznych poliach a tvaroch naprieč zdrojmi.
+
+\begin{figure}[h]
+\centering
+\begin{minipage}{0.95\textwidth}
+
+\textbf{Web of Science (\texttt{utb.wos.affiliation})}
+\begin{verbatim}
+[Belas, Jaroslav; Dvorsky, Jan; Cera, Gentjan]
+   Tomas Bata Univ Zlin, Mostni 5139, Zlin 76001, Czech Republic;
+[Strnad, Zdenek]
+   Univ South Bohemia Ceske Budejovice, Branisovska 31a,
+   Ceske Budejovice 37005, Czech Republic;
+[Valaskova, Katarina]
+   Univ Zilina, Univ 8215-1, Zilina 01026, Slovakia
+\end{verbatim}
+
+\textbf{Scopus (pole \texttt{Authors with affiliations})}
+\begin{verbatim}
+Tomas Bata University in Zlin, Mostni 5139,
+   Zlin, 760 01, Czech Republic;
+University of South Bohemia in Ceske Budejovice,
+   Branisovska 31a, Ceske Budejovice, 370 05, Czech Republic;
+University of Zilina, Univerzitna 8215/1,
+   Zilina, 010 26, Slovakia
+\end{verbatim}
+
+\textbf{Repozitár UTB po normalizácii (\texttt{dc.contributor.author})}
+\begin{verbatim}
+Belás, Jaroslav||Dvorský, Ján||Strnad, Zdeněk||
+   Valášková, Katarína||Çera, Gentjan
+\end{verbatim}
+
+\end{minipage}
+\caption{Reprezentácia tej istej publikácie v troch zdrojoch. WoS zoskupuje autorov a ich afiliácie do jedného poľa s hranatými zátvorkami, Scopus eviduje len zoznam afiliácií bez previazania na konkrétne meno autora a repozitár drží normalizované mená autorov. K štruktúrnym rozdielom sa pripája chýbajúca diakritika v oboch exportoch.}
+\label{fig:author-variants}
+\end{figure}
+
+\subsection{Funkčné požiadavky}
+
+Z predchádzajúcej analýzy vyplývajú nasledujúce funkčné požiadavky. Sú očíslované, aby bolo možné v ďalších kapitolách jednoznačne odkazovať na ich realizáciu a vyhodnotenie.
+
+\begin{itemize}
+    \item \textbf{FR1: Import záznamov z WoS a Scopus.} Aplikácia musí načítať bibliografické záznamy z exportov WoS a Scopus do lokálnej pracovnej databázy a uchovať ich vo forme, ktorá zachová pôvodné hodnoty pre neskoršie porovnanie.
+    \item \textbf{FR2: Validácia a data hygiene.} Aplikácia musí identifikovať bežné formálne chyby (nepovolené znaky, mojibake, nadbytočné medzery, nesprávne sformátované identifikátory) a navrhnúť ich opravy oddelene od skutočného zápisu hodnôt.
+    \item \textbf{FR3: Detekcia interných autorov UTB.} Aplikácia musí porovnať autorov záznamu voči autoritatívnemu registru UTB, identifikovať podmnožinu interných autorov a priradiť im fakultu a ústav podľa afiliácie.
+    \item \textbf{FR4: Normalizácia dátumov.} Aplikácia musí extrahovať redakčné dátumy z poľa \texttt{utb.fulltext.dates} a z ďalších zdrojov a previesť ich do formátu ISO 8601 \cite{ISO8601_2019}, vrátane logickej kontroly chronologického poradia.
+    \item \textbf{FR5: Normalizácia časopisov a vydavateľov.} Aplikácia musí mapovať názov časopisu a vydavateľa na konzistentnú podobu, prednostne podľa ISSN, ISBN alebo DOI, s možnosťou doplnenia z Crossref \cite{CrossrefRESTAPI,ISSNWhatIs}.
+    \item \textbf{FR6: Deduplikácia záznamov.} Aplikácia musí odhaliť duplicitné záznamy v rámci jedného importu, medzi importnými dávkami a voči existujúcim záznamom repozitára, primárne podľa DOI a sekundárne podľa kombinácie atribútov.
+    \item \textbf{FR7: Asistencia LLM tam, kde heuristiky nestačia.} V krokoch detekcie autorov a extrakcie dátumov musí byť k dispozícii voliteľný LLM fallback so štruktúrovaným výstupom v JSON, ktorý sa použije len pri prípadoch, ktoré deterministické pravidlá nedokázali jednoznačne vyriešiť.
+    \item \textbf{FR8: Asistovaná editácia záznamu knihovníkom.} Aplikácia musí poskytnúť používateľské rozhranie, v ktorom knihovník vidí porovnanie hodnôt z viacerých zdrojov, môže ich upravovať a manuálne potvrdiť výslednú podobu záznamu.
+    \item \textbf{FR9: Schvaľovací zásobník zmien.} Úpravy a navrhnuté hodnoty sa pred zápisom do produkčnej databázy uchovávajú v zásobníku, kde ich knihovník môže preverovať, vracať a finálne schvaľovať.
+    \item \textbf{FR10: Audit pôvodu hodnôt.} Pri každej hodnote musí byť možné určiť, či pochádza z pôvodného importu, z heuristického návrhu, z výstupu LLM alebo z manuálneho zásahu knihovníka.
+\end{itemize}
+
+\subsection{Nefunkčné požiadavky}
+
+Vedľa funkčných požiadaviek bolo počas analýzy a konzultácií so zadávateľom sformulovaných niekoľko nefunkčných obmedzení a očakávaní, ktoré ovplyvňujú návrh systému.
+
+\begin{itemize}
+    \item \textbf{NFR1: Local-first prevádzka.} Pri rutinných úlohách musí byť možné spustiť celé spracovanie lokálne, bez závislosti od externého LLM API, aby sa minimalizoval tok citlivých údajov mimo organizácie a aby bola znížená závislosť od poskytovateľa.
+    \item \textbf{NFR2: Vymeniteľnosť LLM vrstvy.} Aplikačný kód nesmie byť pevne viazaný na konkrétneho LLM poskytovateľa. Cez jednotné rozhranie musí byť možné prepnúť medzi lokálnym (Ollama) a cloudovým (OpenAI-kompatibilné API) režimom.
+    \item \textbf{NFR3: Opakovateľnosť spracovania.} Pipeline musí byť možné spustiť opakovane, idempotentne, bez toho, aby opakovaný beh skreslil už raz správne odvodené hodnoty.
+    \item \textbf{NFR4: Striktný JSON výstup z LLM.} Odpovede modelu sa musia podriaďovať preddefinovanej schéme tak, aby ich bolo možné automaticky validovať \cite{OpenAIStructuredOutputs,OllamaStructuredOutputs}.
+    \item \textbf{NFR5: Auditovateľnosť úprav.} Každý zásah do záznamu musí byť rozlíšiteľný podľa pôvodu (heuristika, LLM, človek), čo je v súlade s konceptom provenancie údajov \cite{PROVOverview}.
+    \item \textbf{NFR6: Kontrolovaný prístup.} Aplikácia má byť dostupná iba pre vymenovaných pracovníkov knižnice, s prihlásením integrovaným do prostredia UTB \cite{Konarik2025}.
+    \item \textbf{NFR7: Externé plánovanie behov.} Periodické spustenie pipeline má byť riešené mimo aplikácie, prostredníctvom Windows Task Scheduler alebo cron, aby sa aplikácia nemusela starať o dlhodobo bežiace plánovacie procesy.
+\end{itemize}
+
+\subsection{Scope a vymedzenie hraníc}
+
+Pre korektnú obhajobu navrhovaného riešenia je dôležité jednoznačne pomenovať aj to, čo aplikácia robiť \emph{nebude}. Bez takého vymedzenia by sa od nej dali očakávať vlastnosti, ktoré nikdy neboli súčasťou zadania.
+
+V rámci tejto práce je predmetom realizácie nasledujúce: spracovanie a normalizácia bibliografických metadát z vopred získaných exportov WoS a Scopus, ich konsolidácia s existujúcim repozitárom knižnice, asistovaná editácia záznamov a uloženie schválených hodnôt v rámci kontrolovaného workflow. Aplikácia podporuje pracovníka knižnice v rutinných opravách a normalizáciách, no neodstraňuje nutnosť ľudského schvaľovania pri rozhodovaní o identite osôb, časopisov a duplicít.
+
+Predmetom práce naopak \emph{nie je} nasledujúce: nahradenie existujúceho repozitára publikácií UTB, automatizovaný zber dát z webu mimo dohodnutých zdrojov, plnotextová indexácia článkov, vlastná autentifikačná infraštruktúra mimo už zavedeného UTB prihlasovania ani trénovanie alebo doladenie samotných jazykových modelov. Aplikácia tiež nepretláča lokálne autoritatívne záznamy do externých systémov a nie je nástrojom pre koncového používateľa repozitára (čitateľa, autora). Jej cieľovou skupinou sú výlučne pracovníci knižnice, ktorí spravujú evidenciu publikačnej činnosti.
+
+Tým je rámec praktickej časti vymedzený tak, aby zodpovedal zadaniu \emph{Aplikácia pre podporu správy repozitáre vedeckých výstupov pomocou AI}, no zároveň zostal realisticky obhájiteľný v termíne odovzdania a počas obhajoby.

@@ -1,0 +1,63 @@
+
+% Kapitola 3: Kvalita dát a entity resolution
+% Stav: finálna verzia
+
+\section{Kvalita dát a entity resolution}
+
+Predchádzajúca kapitola ukázala, že bibliografický záznam nie je iba súborom deskriptívnych polí, ale aj nositeľom identít, väzieb a pravidiel, podľa ktorých sa má ďalej spracovať. Ak má aplikácia podporovať normalizáciu a bezpečný zápis do lokálneho prostredia, nestačí poznať len význam jednotlivých polí. Potrebné je aj určiť, ktoré typy chýb sa v údajoch objavujú, ako možno posudzovať ich kvalitu a akými metódami možno zistiť, že dva zápisy označujú tú istú entitu alebo ten istý záznam. Táto kapitola preto prechádza od opisu metadát k ich analytickému spracovaniu.
+
+\subsection{Rozmery dátovej kvality}
+
+Kvalitu dát nemožno redukovať na jediné kritérium. V literatúre sa opakovane uvádza, že údaje môžu byť formálne správne, no napriek tomu nevhodné na konkrétne použitie. Wang a Strong preto navrhli chápať dátovú kvalitu ako viacrozmerný koncept, ktorého posúdenie závisí od potrieb používateľa a od kontextu použitia \cite{WangStrong1996}. Pre potreby tejto práce sú najrelevantnejšie najmä štyri dimenzie: úplnosť, presnosť, konzistentnosť a časová primeranosť.
+
+Úplnosť vyjadruje, či záznam obsahuje všetky údaje potrebné na zamýšľané použitie. V publikačných exportoch môže byť problémom chýbajúci DOI, neúplný zoznam autorov alebo absentujúca afiliácia. Presnosť sa vzťahuje na mieru zhody medzi údajom v systéme a stavom, ktorý má reprezentovať. Typickým príkladom je nesprávne priradenie časopisu, mylný rok vydania alebo zle rozpoznaná identita autora. Konzistentnosť vyjadruje vnútornú bezrozpornosť údajov a ich zápisu. V bibliografickej oblasti sa prejavuje napríklad rozdielnymi podobami toho istého mena, odlišným formátom identifikátora alebo konfliktom medzi názvom časopisu a ISSN. Časová primeranosť, označovaná aj ako timeliness, vyjadruje, či údaje zodpovedajú aktuálnemu a použiteľnému stavu pre konkrétny pracovný krok \cite{WangStrong1996,PipinoLeeWang2002}.
+
+Z pohľadu navrhovanej aplikácie je dôležité, že tieto dimenzie nemožno posudzovať oddelene. Chýbajúci údaj znižuje úplnosť, no zároveň môže znemožniť presné párovanie a následne znížiť aj konzistentnosť lokálnej evidencie. Abedjan a kol. upozorňujú, že profilovanie a skúmanie datasetu je prirodzeným predpokladom jeho ďalšieho čistenia, integrácie a kontroly \cite{Abedjan2019}. Praktická časť preto nebude chápať kvalitu dát ako abstraktnú vlastnosť databázy, ale ako súbor konkrétnych kontrol a rozhodnutí viazaných na jednotlivé polia publikačného záznamu.
+
+\subsection{Typické chyby v exportoch z bibliografických databáz}
+
+V exportoch z bibliografických databáz sa zvyčajne nekombinuje iba jeden typ chyby, ale viacero vrstiev nejednotnosti naraz. Časté sú chýbajúce hodnoty, variantné textové podoby, konfliktné údaje medzi poliami a technické nedostatky vzniknuté pri prenose alebo transformácii. Takéto chyby majú v bibliografickom kontexte osobitný význam, pretože aj malá odchýlka v mene autora alebo názve periodika môže znemožniť správne priradenie k lokálnej autorite alebo vytvoriť falošnú duplicitu.
+
+Mikulecký pri spracovaní publikačných metadát upozorňuje, že problémové sú najmä polia, ktoré majú v zdrojoch vysokú jazykovú variabilitu, ale v cieľovom systéme musia mať kontrolovanú a štruktúrovanú podobu \cite{Mikulecky2025}. V podmienkach UTB ide najmä o mená autorov, afiliácie, názvy časopisov, redakčné dátumy a identifikátory. Časť problémov je formálna, napríklad nadbytočné medzery, rozdielna interpunkcia alebo nejednotné použitie veľkých písmen. Druhá časť je sémantická, keď dve hodnoty vyzerajú odlišne, ale označujú tú istú entitu, alebo naopak vyzerajú podobne, no vzťahujú sa na odlišné objekty.
+
+Pre návrh aplikácie je dôležité, že tieto chyby nemožno riešiť iba jedným mechanizmom. Niektoré sa dajú odhaliť jednoduchou validáciou formátu, iné vyžadujú porovnanie s externým zdrojom a ďalšie si vyžadujú rozhodovanie nad podobnosťou a kontextom. Práve preto je vhodné oddeliť technickú kontrolu vstupu od úloh entity resolution a od následnej kurácie človekom.
+
+\subsection{Entity resolution}
+
+Pojem entity resolution označuje súbor metód, ktorých cieľom je určiť, či dva alebo viaceré záznamy odkazujú na tú istú reálnu entitu. V literatúre sa používajú aj príbuzné označenia, napríklad record linkage, duplicate detection alebo data matching, no všetky smerujú k rovnakému jadru problému: rozdielne reprezentácie treba previesť na rozhodnutie o identite alebo neidentite \cite{Christen2012,KopckeRahm2010}. V kontexte tejto práce sa entity resolution týka autorov, časopisov aj samotných publikačných záznamov.
+
+\subsubsection{Deterministické pravidlá}
+
+Deterministický prístup vychádza z pravidiel, pri ktorých možno jednoznačne povedať, aký výsledok má porovnanie priniesť. Typickým príkladom je zhodný DOI po normalizácii zápisu alebo presná zhoda s lokálnym identifikátorom entity. Výhodou takéhoto prístupu je jeho predvídateľnosť, auditovateľnosť a nízka interpretačná nejednoznačnosť. Christen uvádza, že presné pravidlá sú vhodné všade tam, kde sú k dispozícii dostatočne spoľahlivé identifikátory alebo dobre definované formátové obmedzenia \cite{Christen2012}.
+
+V bibliografickom workflow však deterministické pravidlá nestačia na všetky situácie. Ich sila spočíva najmä v tom, že dokážu odfiltrovať jednoduché a vysokodôveryhodné prípady. V navrhovanom riešení preto majú tvoriť prvú vrstvu spracovania. Ak je k dispozícii spoľahlivý identifikátor alebo jasné pravidlo, nie je dôvod prechádzať na výpočtovo a interpretačne náročnejšie porovnanie podobnosti.
+
+\subsubsection{Podobnostné metriky}
+
+Ak presné identifikátory chýbajú alebo sú neúplné, nastupuje aproximatívne porovnávanie textových hodnôt. V tejto oblasti sa používajú rôzne triedy podobnostných metrík, ktoré sa líšia citlivosťou na preklepy, transpozície, skrátenia alebo slovosled. Pri menách autorov a názvoch publikácií majú význam najmä edit-distance prístupy a metriky založené na čiastočnej zhode reťazcov. Christen zdôrazňuje, že neexistuje univerzálne najlepšia podobnostná funkcia a jej vhodnosť závisí od typu dát aj od charakteru chyby \cite{Christen2012}.
+
+Pre potreby tejto práce sú relevantné najmä metriky typu Levenshtein a Jaro-Winkler. Editačná vzdialenosť je vhodná tam, kde treba zachytiť malé textové odchýlky vzniknuté vložením, odstránením alebo zámenou znaku \cite{Christen2012}. Jaro-Winklerova podobnosť je zasa praktická pri krátkych reťazcoch, najmä pri menách, kde býva dôležitý spoločný prefix a menšie preklepy v závere slova \cite{Winkler1990}. Z praktického hľadiska však ani podobnostná metrika sama osebe nevyrieši rozhodnutie o zhode. Potrebné je určiť, ktoré polia sa porovnávajú, ako sa ich výsledky kombinujú a pri akom prahu sa už zhoda považuje za dostatočnú.
+
+\subsection{Deduplikácia záznamov}
+
+Deduplikácia predstavuje praktickú aplikáciu entity resolution na úrovni celých záznamov. Jej cieľom nie je len nájsť identické položky, ale zabrániť viacnásobnému uloženiu toho istého publikačného výstupu v dôsledku rozdielnych exportov, odlišného zápisu polí alebo absencie niektorých identifikátorov. Naumann a Herschel upozorňujú, že pri väčších datasetoch je potrebné súčasne riešiť dve otázky: ako posúdiť podobnosť dvoch kandidátnych záznamov a ako obmedziť počet dvojíc, ktoré sa vôbec budú porovnávať \cite{NaumannHerschel2010}.
+
+Prvá otázka súvisí s výberom porovnávacích kľúčov. V podmienkach tejto práce má mať prioritu jednoznačný identifikátor publikácie, teda DOI, ak je dostupný a validný. Ak takýto kľúč chýba, je potrebné použiť kombináciu sekundárnych znakov, najmä názov práce, identifikátor časopisu a rok vydania. Druhá otázka sa týka obmedzenia priestoru kandidátov. Christen aj Naumann a Herschel uvádzajú, že porovnávať všetky záznamy so všetkými je pri väčších súboroch neefektívne, preto sa používajú stratégie blokovania, ktoré najprv vytvoria menšie skupiny pravdepodobných kandidátov \cite{Christen2012,NaumannHerschel2010}.
+
+V navrhovanom riešení bude mať deduplikácia význam nielen voči už existujúcim záznamom repozitára, ale aj medzi importmi z rôznych zdrojov. Praktický problém preto nie je binárny, ale viacvrstvový: treba rozlíšiť zhodu v rámci jedného importu, medzi dvoma importnými dávkami a medzi novou dávkou a cieľovým úložiskom. Teoretickým východiskom je pritom kombinácia presných pravidiel a podobnostného porovnávania, nie voľné rozhodovanie bez auditovateľného základu.
+
+\subsection{Štandardizácia časových údajov}
+
+Osobitný problém predstavujú časové údaje, ktoré sa v bibliografických záznamoch často vyskytujú vo voľnom texte alebo v nejednotnej štruktúre. V publikačnom workflow môžu mať význam nielen klasické údaje o roku vydania, ale aj dátumy redakčného procesu, napríklad prijatie rukopisu, revízia, akceptovanie alebo prvé zverejnenie. Ak sa majú tieto hodnoty ďalej validovať, porovnávať alebo ukladať do databázy, je potrebné previesť ich do jednotného a strojovo jednoznačného formátu.
+
+Základným referenčným rámcom je norma ISO 8601-1:2019, ktorá určuje pravidlá reprezentácie dátumu a času pre informačnú výmenu \cite{ISO8601_2019}. V aplikačnej praxi je veľmi relevantný aj RFC 3339, ktorý predstavuje internetový profil týchto zápisov a presne určuje formu timestampu vrátane časovej zóny \cite{RFC3339}. Pre potreby tejto práce je dôležité najmä to, že jednotný formát odstraňuje nejednoznačnosť pri ďalšom spracovaní. Ak sa dátumy ponechajú iba vo voľnom texte, stráca sa možnosť ich spoľahlivo porovnávať, filtrovať a validovať.
+
+Štandardizácia časových údajov preto nie je iba estetická úprava formátu. Ide o prevod z ľudsky čitateľnej, ale pre systém často nejednoznačnej reprezentácie do tvaru, ktorý možno jednoznačne uložiť, kontrolovať a odovzdať ďalším vrstvám aplikácie. Tento krok bude mať v praktickej časti osobitné postavenie, pretože kombinuje parsovanie textu, doménové pravidlá a následnú normalizáciu do jednotného zápisu.
+
+\subsection{Provenancia a auditovateľnosť úprav}
+
+Ak má aplikácia podporovať zásahy do importovaných metadát, nestačí ukladať iba finálnu hodnotu po oprave. Dôležité je aj to, aby bolo možné spätne určiť, odkiaľ daná hodnota pochádza, akým spôsobom bola získaná a kto alebo čo ju navrhlo. W3C PROV definuje provenanciu ako informáciu o entitách, aktivitách a osobách zapojených do vzniku alebo zmeny údajov, pričom práve takáto informácia umožňuje posudzovať kvalitu, spoľahlivosť a dôveryhodnosť dát \cite{PROVOverview}.
+
+V doméne správy publikačných metadát má provenancia priamy praktický význam. Pri jednom poli môže existovať pôvodná hodnota z importu, návrh doplnenia z externého zdroja, odporúčanie generované modelom a napokon manuálne potvrdená alebo upravená hodnota knihovníkom. Bez evidencie pôvodu takýchto zásahov nie je možné spoľahlivo analyzovať, ktoré mechanizmy fungujú dobre, kde vznikajú chyby a aký bol dôvod výslednej podoby záznamu. Mikulecký v metodickom rámci práce s AI pri metadátach zdôrazňuje potrebu sledovať úspešnosť a interpretovateľnosť jednotlivých krokov spracovania \cite{Mikulecky2025}. V podobnom duchu Koňařík pri webovej aplikácii nad univerzitnými dátami akcentuje validáciu a kontrolovaný používateľský zásah ako súčasť dôveryhodného workflow \cite{Konarik2025}.
+
+Pre praktickú časť z toho vyplýva, že auditovateľnosť nemožno chápať iba ako technický log operácií. Má ísť o vedomé modelovanie pôvodu hodnôt a typov zásahu tak, aby bolo možné odlíšiť pôvodný import, heuristické rozhodnutie, odporúčanie AI a finálne schválenie človekom. Takáto evidencia je dôležitá nielen pre spätnú kontrolu, ale aj pre vyhodnocovanie kvality navrhovaného riešenia.

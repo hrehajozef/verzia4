@@ -1,0 +1,41 @@
+
+% Kapitola 5: Súvisiace systémy a porovnateľné riešenia
+% Stav: finálna verzia
+
+\section{Súvisiace systémy a porovnateľné riešenia}
+
+Pri návrhu aplikácie na podporu evidencie a normalizácie publikačných metadát je užitočné zasadiť riešený problém do širšieho prostredia existujúcich systémov. Cieľom tejto kapitoly nie je podávať úplný prehľad všetkých repozitárových a výskumno-informačných platforiem, ale vybrať tie typy systémov, ktoré sú pre tému práce porovnateľné z hľadiska funkcie, dátového modelu alebo pracovného postupu. Rozlíšenie medzi repozitárom, CRIS systémom a otvoreným agregátorom je dôležité aj preto, že navrhovaná aplikácia sa nachádza medzi týmito kategóriami iba čiastočne a nemožno ju bez ďalšieho stotožniť so žiadnou z nich.
+
+\subsection{Inštitucionálne repozitáre}
+
+Najbližším referenčným typom systému je inštitucionálny repozitár. Jeho jadrom je uchovávanie, sprístupňovanie a dlhodobá správa digitálnych objektov a ich metadát v prostredí konkrétnej organizácie. Z praktického hľadiska ide o platformu, ktorá spravidla kombinuje evidenciu záznamov, ukladanie súborov, prístupové politiky, export metadát a nadväzujúce integračné mechanizmy. Pre túto prácu sú relevantné najmä DSpace, EPrints a InvenioRDM, pretože reprezentujú tri etablované open-source prístupy k repozitárovej infraštruktúre.
+
+DSpace patrí medzi najznámejšie a najrozšírenejšie repozitárové riešenia. Už jeho pôvodný opis zdôrazňoval úlohu digitálneho repozitára ako inštitucionálnej služby na uchovávanie a redistribúciu výskumných a vzdelávacích materiálov \cite{Smith2003}. Súčasná dokumentácia DSpace ukazuje, že platforma je orientovaná na správu komunít, kolekcií, metadát, autorizácie, exportu a ingestu obsahu a že podporuje integrácie s externými službami vrátane ORCID a OpenAIRE \cite{DSpaceDocs}. Pre potreby tejto práce je dôležité, že DSpace reprezentuje model plnohodnotného repozitára, nie iba pomocného validačného nástroja pred uložením záznamu.
+
+EPrints predstavuje iný, historicky veľmi významný open-source prístup. Oficiálna dokumentácia aj produktová prezentácia zdôrazňujú flexibilitu workflow, prispôsobiteľnosť formulárov, lokálnu konfiguráciu schémy a použitie v prostredí otvorených repozitárov aj iných typov inštitucionálneho zberu obsahu \cite{EPrintsWhatIs}. Z oficiálnej dokumentácie EPrints sa zdá, že platforma kladie výraznejší dôraz na akvizičný a kurátorský workflow \cite{EPrintsWhatIs}, čo je z hľadiska tejto práce zaujímavé, pretože riešená aplikácia pracuje práve v štádiu pred finálnym uložením záznamu.
+
+InvenioRDM reprezentuje novší typ repozitárovej platformy, ktorá je od začiatku koncipovaná ako turn-key research data management repository s dôrazom na API, interoperabilitu, škálovateľnosť a konfigurovateľnosť \cite{InvenioRDMDocs}. Oficiálna dokumentácia uvádza, že InvenioRDM je harvestovateľný cez OAI-PMH, vystavuje REST API, podporuje viacero exportných formátov a interný metadátový model opiera o schému DataCite \cite{InvenioRDMInteroperable}. Z hľadiska tejto práce je cenné najmä to, že ukazuje spojenie repozitárovej logiky s modernou aplikačnou architektúrou. Ani InvenioRDM však nerieši presne ten istý problém ako navrhovaná aplikácia, pretože jeho primárnou úlohou je správa a publikovanie záznamov a objektov, nie kurátorské spracovanie importov pred zápisom do cudzieho lokálneho systému.
+
+\subsection{Komerčné CRIS systémy}
+
+Od inštitucionálnych repozitárov treba odlíšiť CRIS alebo RIMS systémy, teda platformy orientované na zhromažďovanie, prepájanie a reportovanie výskumných informácií na úrovni organizácie. Zatiaľ čo repozitár sa typicky sústreďuje na záznam a sprístupnenie konkrétnych objektov, CRIS systém má širší záber a prepája publikácie, osoby, projekty, granty, organizačné jednotky, hodnotenie a verejné profily.
+
+Typickým príkladom je Pure, ktorý Elsevier charakterizuje ako Research Information Management System alebo Current Research Information System navrhnutý na integráciu rôznych zdrojov výskumných informácií, reporting a prezentáciu výskumných aktivít inštitúcie \cite{PureRIMS}. Podobný profil má Symplectic Elements, ktorý podľa oficiálneho opisu ingestuje dáta z viacerých interných a externých zdrojov a vytvára pre organizáciu jednotný obraz výskumnej činnosti, použiteľný pre profily, reporting a administratívne procesy \cite{SymplecticElements}. Obe platformy sú pre túto prácu zaujímavé skôr ako referenčný kontrast než ako priama technologická inšpirácia.
+
+Podstatné je, že CRIS systémy riešia širší inštitucionálny problém než ten, ktorý je predmetom tejto diplomovej práce. Navrhovaná aplikácia sa nesnaží centralizovať všetky výskumné informácie univerzity, ale zamerať sa na konkrétny medzikrok medzi importom bibliografických záznamov a ich finálnym uložením do existujúceho lokálneho prostredia. V tomto zmysle je vhodné vnímať CRIS systémy ako konceptuálne príbuzné, no rozsahom a ambíciou odlišné riešenia.
+
+\subsection{Otvorené agregátory metadát}
+
+Tretiu skupinu predstavujú otvorené agregátory metadát. Ich úlohou nie je primárne prevádzkovať lokálny repozitár ani slúžiť ako interný organizačný systém, ale zbierať, prepájať a vystavovať metadáta z veľkého počtu zdrojov. Pre túto prácu sú relevantné najmä OpenAIRE a OpenAlex.
+
+OpenAIRE vystupuje ako európska infraštruktúra založená na interoperabilnom zbere metadát z repozitárov, dátových archívov a CRIS systémov. Jeho oficiálne guidelines definujú, ako majú lokálne systémy vystavovať metadáta cez OAI-PMH tak, aby ich bolo možné agregovať, validovať a začleniť do širšej infraštruktúry \cite{OpenAIREGuidelines4}. Z pohľadu tejto práce má OpenAIRE význam najmä ako normatívny rámec pre výmenu a zber metadát, nie ako nástroj na lokálnu kuráciu importovaných záznamov.
+
+OpenAlex má odlišný charakter. Ide o plne otvorený index vedeckých diel, autorov, zdrojov, inštitúcií a konceptov, sprístupnený cez verejné API a dátové snapshoty \cite{OpenAlexPaper,OpenAlexDocs}. Jeho význam pre túto prácu spočíva v tom, že môže slúžiť ako doplnkový externý zdroj na overovanie alebo dopĺňanie vybraných bibliografických polí. Na rozdiel od OpenAIRE však nejde o infraštruktúru založenú na validačných odporúčaniach pre lokálne repozitáre, ale o otvorený metadátový index nad vedeckým ekosystémom.
+
+\subsection{Prečo UTB workflow dopĺňa, nenahrádza repozitár}
+
+Porovnanie s repozitármi, CRIS systémami a agregátormi ukazuje, že navrhované riešenie nemožno presne zaradiť ani do jednej z týchto kategórií. Nejde o plnohodnotný repozitár, pretože jeho cieľom nie je dlhodobé uchovávanie digitálnych objektov, verejné sprístupňovanie záznamov ani implementácia celej publikačnej infraštruktúry. Nejde ani o CRIS systém, pretože sa nesústredí na úplnú správu výskumných informácií organizácie. Rovnako nejde o agregátor, keďže jeho úlohou nie je zber metadát z veľkého počtu externých zdrojov do jednej otvorenej nadstavby.
+
+Navrhovaná aplikácia má užší, ale v lokálnom prostredí dôležitý účel. Predstavuje kurátorskú a validačnú medzivrstvu medzi importom z externých bibliografických databáz a finálnym uložením záznamu do interného prostredia knižnice UTB. Práve v tomto štádiu vzniká potreba normalizácie autorov, časopisov, dátumov, deduplikácie a zaznamenávania provenancie úprav. Repozitár ani CRIS systém tieto úlohy môžu čiastočne obsahovať \cite{DSpaceDocs,PureRIMS}, no nie vždy ich riešia spôsobom zodpovedajúcim lokálnemu workflow konkrétnej inštitúcie.
+
+Z tohto dôvodu je presnejšie hovoriť o doplnkovej aplikačnej vrstve než o náhrade existujúceho repozitára. Praktická časť práce preto nebude smerovať k vytvoreniu nového repozitárového systému, ale k návrhu špecializovaného nástroja, ktorý zlepší kvalitu vstupných záznamov ešte pred ich uložením do existujúcej evidenčnej a repozitárovej infraštruktúry UTB.

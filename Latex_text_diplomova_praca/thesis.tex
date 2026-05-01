@@ -1,0 +1,130 @@
+% Definice vzhledu a nastavení se nachází přímo v následující speciální třídě
+\documentclass{template-definitions/thesistbuinzlin}
+
+% Uživatelské definice -- upravte dle potřeby
+\setthesislanguage{CZ}
+% CZ   -- práce bude v českém jazyce
+% EN   -- práce bude v anglickém jazyce
+
+\setfaculty{FAI}
+  % FAI  -- pro Fakultu aplikované informatiky
+  % FAME -- pro Fakultu managementu a ekonomiky
+  % FHS  -- pro Fakultu humanitních studií
+  % FLKR -- pro Fakultu logistiky a krizového řízení
+  % FMK  -- pro Fakutlu mutimediálních komunikací
+  % FT   -- pro Fakultu technologickou
+  % UNI  -- pro Univerzitní institut
+
+\setthesistype{DP}
+  % BP   -- bakalářská práce
+  % DP   -- diplomová práce
+
+\setthesisyear{2026}
+  % zadejte rok namísto "xxxx"
+
+\setcitationmode{numbers}
+  % authoryear -- odkazování na zdroje bude v módu (autor, rok), tzv. harvardský systém, vhodné v případě fakult FAME, FHS, FLKŘ, FMK, FT
+  % numbers    -- odkazování na zdroje bude v číselném módu [číslo], vhodné v případě fakult FAI, FT
+
+% Lze přidat vertikální odsazení nad (prvni parametr) a pod (druhý parametr) obrázky, tabulky i rovnice/soustavy rovnic
+\setmarginaroundfigures{0mm}{0mm}
+\setmarginaroundtables{0mm}{0mm}
+\setmarginaroundequations{0mm}{0mm}
+
+\setauthor{Bc. Jozef Hreha}
+
+\settitlecz{Aplikace pro podporu správy repozitáře vědeckých výstupů za pomocí AI (LLM)}
+\settitleen{Thesis Title in English (max. 7 rows)}  % Needed only when writing in English
+
+\setabstractcz{Text abstraktu v jazyce práce.}
+
+\setabstracten{Text abstraktu ve světovém jazyce (angličtině).}
+
+\setkeywordscz{klíčové slovo, klíčové slovo}
+
+\setkeywordsen{keyword, keyword}
+
+\setuppdfa
+
+%\usecolouredlinks  % Volitelné, může být nápomocné při tvorbě a kontrole výsledného dokumentu
+
+% ============================================================================ %
+
+\begin{document}
+
+\maketitle
+
+% nasledujuci riadok tu musi byt, inak sa dobabrú riadky
+\insertassignment{graphics/placeholder-scan.pdf}
+
+\insertdeclaration{CZ}
+  % CZ   -- doporučované, i pokud práci píše český/slovenský student v angličtině
+  % EN   -- variant only for international students
+
+\insertabstractandkeywords
+
+% ============================================================================ %
+
+\clearpage
+Zde je místo pro případné poděkování, popř. motto, úryvky knih atp.
+Pokud poděkování nechcete vložit, smažte celý tento blok 
+(mezi příkazy cleardoublepage, včetně těchto příkazů).
+
+
+
+% ============================================================================ %
+
+\insertcontents  % Obsah je generován automaticky
+
+% ============================================================================ %
+
+%\insertlistoffigures  % Seznam je generován automaticky
+
+%\insertlistoftables  % Seznam je generován automaticky
+
+%%\insertlistoflisting  % Seznam je generován automaticky, vhodné jen pokud máte v dokumentu fragmenty kódu
+
+%\input{text/abbreviations.tex}  % Seznam zkratek
+
+%\insertlistofappendices  % Seznam příloh je generován automaticky
+
+% ============================================================================ %
+
+\paragraphindentationstart  % Nastaví odsazování odstavců dle zvoleného jazyka
+%\cleardoublepage					  % Další text (úvod) až na liché straně
+
+% Text práce
+\input{text/text-chapter-00-introduction.tex}
+
+
+\part{TEORETICKÁ ČASŤ}
+\input{text/text-chapter-01.tex}
+\input{text/text-chapter-02.tex}
+\input{text/text-chapter-03.tex}
+\input{text/text-chapter-04.tex}
+\input{text/text-chapter-05.tex}
+\input{text/text-chapter-06.tex}
+
+
+\part{PRAKTICKÁ ČASŤ}
+\input{text/text-chapter-07.tex}
+\input{text/text-chapter-08.tex}
+
+
+\input{text/text-chapter-99-conclusion.tex}
+
+\paragraphindentationstop
+
+% ============================================================================ %
+
+% Využívají se bibliografické údaje uložené v souboru tex/references.bib.
+% Ty se automaticky upravuji dle zvolené citační normy (ČSN ISO 690:2022).
+\insertlistofreferences
+
+%\input{text/appendices.tex}  % Vložení příloh
+
+% ============================================================================ %
+
+\end{document}
+
+% ============================================================================ %

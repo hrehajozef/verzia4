@@ -15,6 +15,8 @@ from src.config.settings import settings
 from src.db.engines import get_local_engine, get_remote_engine
 
 CHANGE_BUFFER_TABLE = "utb_change_buffer"
+PRIRASTKY_TABLE = "utb_prirastky_arr"
+PRIRASTKY_VIEW = "utb_metadata_arr_with_prirastky"
 
 
 def _get_remote_columns(remote_engine: Engine) -> list[dict]:
@@ -495,4 +497,31 @@ def run_bootstrap(drop_existing: bool = False) -> None:
     else:
         print(f"[INFO] Lokálna tabuľka už obsahuje {local_count} riadkov, kopírovanie sa preskočilo.")
 
+    setup_prirastky_view(local_engine)
     print("[OK] Bootstrap dokončený.")
+
+
+def setup_prirastky_view(local_engine: Engine | None = None) -> None:
+    """
+    Vytvori view utb_metadata_arr_with_prirastky, ak existuje public.utb_prirastky_arr.
+
+    Ak tabulka prirastkov este neexistuje, iba vypise warning a skonci bez padu.
+    """
+    local_engine = local_engine or get_local_engine()
+    schema = settings.local_schema
+    inspector = inspect(local_engine)
+    if not inspector.has_table(PRIRASTKY_TABLE, schema=schema):
+        print(
+            f"[WARN] {schema}.{PRIRASTKY_TABLE} neexistuje, "
+            f"view {schema}.{PRIRASTKY_VIEW} sa nevytvorilo."
+        )
+        return
+
+    with local_engine.begin() as conn:
+        conn.execute(text(f"""
+            CREATE OR REPLACE VIEW "{schema}"."{PRIRASTKY_VIEW}" AS
+            SELECT * FROM "{schema}"."{settings.local_table}"
+            UNION ALL
+            SELECT * FROM "{schema}"."{PRIRASTKY_TABLE}"
+        """))
+    print(f"[OK] View {schema}.{PRIRASTKY_VIEW} pripravene.")

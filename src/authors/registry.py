@@ -28,15 +28,28 @@ if TYPE_CHECKING:
 class InternalAuthor:
     surname: str
     firstname: str
+    middle_name: str = ""
     aliases: tuple[str, ...] = ()
     limited_author_id: int | None = None
+    utb_id: str | None = None
+    display_name: str = ""
+    scopus_id: str | None = None
+    wos_id: str | None = None
+    orcid: str | None = None
+    obd_id: str | None = None
+    organization_id: int | None = None
+    faculty: str | None = None
 
     @property
     def canonical_name(self) -> str:
-        return f"{self.surname}, {self.firstname}" if self.firstname else self.surname
+        given_parts = [self.firstname, self.middle_name]
+        given = " ".join(part.strip() for part in given_parts if part and part.strip())
+        return f"{self.surname}, {given}" if given else self.surname
 
     @property
     def full_name(self) -> str:
+        if self.display_name.strip():
+            return self.display_name.strip()
         return self.aliases[0] if self.aliases else self.canonical_name
 
     @property
@@ -44,7 +57,9 @@ class InternalAuthor:
         if "," in self.full_name:
             left, right = self.full_name.split(",", 1)
             return f"{right.strip()} {left.strip()}".strip()
-        return f"{self.firstname} {self.surname}".strip()
+        given_parts = [self.firstname, self.middle_name]
+        given = " ".join(part.strip() for part in given_parts if part and part.strip())
+        return f"{given} {self.surname}".strip()
 
     @property
     def all_names(self) -> tuple[str, ...]:
@@ -252,7 +267,7 @@ def _author_match_variants(author: InternalAuthor, *, normalize: bool) -> list[s
 _AUTHOR_REGISTRY: list[InternalAuthor] = []
 _REMOTE_SCHEMA = settings.remote_schema
 _AFFILIATION_CACHE: dict[tuple[str, str], tuple[tuple[str, ...], str]] = {}
-_LIMITED_TABLE = "utb_authors_limited"
+_AUTHORS_TABLE = "utb_authors"
 
 
 def _utb_tree_cte(schema: str) -> str:
@@ -294,21 +309,66 @@ def clear_author_registry_cache() -> None:
     _AUTHOR_REGISTRY.clear()
 
 
+def _split_alias_values(*raw_values: object) -> tuple[str, ...]:
+    values: list[str] = []
+    seen: set[str] = set()
+    for raw in raw_values:
+        if raw is None:
+            continue
+        parts = str(raw).split("||")
+        for part in parts:
+            value = part.strip()
+            if not value:
+                continue
+            key = _match_norm(value)
+            if key in seen:
+                continue
+            seen.add(key)
+            values.append(value)
+    return tuple(values)
+
+
 def _parse_limited_author(row) -> InternalAuthor | None:
-    aliases = tuple(
-        value.strip()
-        for value in str(row.display_name or "").split("||")
-        if value and str(value).strip()
+    aliases = _split_alias_values(
+        getattr(row, "display_name", None),
+        getattr(row, "other_name", None),
     )
     surname = (row.surname or "").strip()
     firstname = (row.given_name or "").strip()
+    middle_name = (getattr(row, "middle_name", None) or "").strip()
+    display_name = aliases[0] if aliases else str(getattr(row, "display_name", "") or "").strip()
+    author_id = int(row.author_id) if getattr(row, "author_id", None) is not None else None
+    organization_id = (
+        int(getattr(row, "organization_id"))
+        if getattr(row, "organization_id", None) is not None
+        else None
+    )
+    wos_id = (
+        str(getattr(row, "researcherid", "") or "").strip()
+        or str(getattr(row, "wos_id", "") or "").strip()
+        or None
+    )
+    scopus_id = str(getattr(row, "scopusid", "") or "").strip() or None
+    utb_id = str(getattr(row, "utbid", "") or "").strip() or None
+    orcid = str(getattr(row, "orcid", "") or "").strip() or None
+    obd_id = str(getattr(row, "obd_id", "") or "").strip() or None
+    faculty = str(getattr(row, "faculty", "") or "").strip() or None
 
     if surname:
         return InternalAuthor(
             surname=surname,
             firstname=firstname,
+            middle_name=middle_name,
             aliases=aliases,
-            limited_author_id=int(row.author_id) if getattr(row, "author_id", None) is not None else None,
+            limited_author_id=author_id,
+            utb_id=utb_id,
+            display_name=display_name,
+            scopus_id=scopus_id,
+            wos_id=wos_id,
+            orcid=orcid,
+            obd_id=obd_id,
+            organization_id=organization_id,
+            faculty=faculty,
         )
 
     primary = aliases[0] if aliases else ""
@@ -322,36 +382,65 @@ def _parse_limited_author(row) -> InternalAuthor | None:
             return InternalAuthor(
                 surname=surname,
                 firstname=firstname,
+                middle_name=middle_name,
                 aliases=aliases,
-                limited_author_id=int(row.author_id) if getattr(row, "author_id", None) is not None else None,
+                limited_author_id=author_id,
+                utb_id=utb_id,
+                display_name=display_name,
+                scopus_id=scopus_id,
+                wos_id=wos_id,
+                orcid=orcid,
+                obd_id=obd_id,
+                organization_id=organization_id,
+                faculty=faculty,
             )
     return InternalAuthor(
         surname=primary,
         firstname="",
+        middle_name=middle_name,
         aliases=aliases,
-        limited_author_id=int(row.author_id) if getattr(row, "author_id", None) is not None else None,
+        limited_author_id=author_id,
+        utb_id=utb_id,
+        display_name=display_name,
+        scopus_id=scopus_id,
+        wos_id=wos_id,
+        orcid=orcid,
+        obd_id=obd_id,
+        organization_id=organization_id,
+        faculty=faculty,
     )
 
 
 def get_author_registry(remote_engine: Engine | None = None) -> list[InternalAuthor]:
-    """Return cached internal authors loaded from remote utb_authors_limited."""
+    """Return cached internal authors loaded from remote utb_authors."""
     if _AUTHOR_REGISTRY:
         return _AUTHOR_REGISTRY
 
     schema = settings.remote_schema
     sql = text(f"""
-        SELECT DISTINCT
+        SELECT
+            poradie,
             author_id,
+            utbid,
             display_name,
             surname,
-            given_name
-        FROM "{schema}"."{_LIMITED_TABLE}"
+            given_name,
+            middle_name,
+            other_name,
+            scopusid,
+            researcherid,
+            wos_id,
+            orcid,
+            obd_id,
+            organization_id,
+            faculty
+        FROM "{schema}"."{_AUTHORS_TABLE}"
         WHERE COALESCE(utb, '') ILIKE 'ano'
           AND (
               COALESCE(surname, '') <> ''
               OR COALESCE(display_name, '') <> ''
           )
-        ORDER BY surname, given_name, display_name
+        ORDER BY surname, given_name
     """)
 
     with (remote_engine or get_remote_engine()).connect() as conn:
@@ -366,6 +455,7 @@ def get_author_registry(remote_engine: Engine | None = None) -> list[InternalAut
             author.limited_author_id,
             _match_norm(author.surname),
             _match_norm(author.firstname),
+            _match_norm(author.middle_name),
         )
         if key in seen:
             continue
@@ -479,6 +569,34 @@ def _extract_surname_norm(name: str) -> str:
     return _match_norm(parts[-1]) if parts else _match_norm(name)
 
 
+_ORCID_RE = re.compile(r"\b\d{4}-\d{4}-\d{4}-\d{3}[0-9X]\b", flags=re.IGNORECASE)
+_SCOPUS_ID_RE = re.compile(r"\b\d{8,11}\b")
+_WOS_TOKEN_RE = re.compile(r"\b[A-Z0-9][A-Z0-9-]{5,}\b", flags=re.IGNORECASE)
+
+
+def _match_external_id(candidate_name: str, registry: list[InternalAuthor]) -> MatchResult | None:
+    orcid_match = _ORCID_RE.search(candidate_name or "")
+    if orcid_match:
+        target = orcid_match.group(0).upper()
+        for author in registry:
+            if (author.orcid or "").upper() == target:
+                return MatchResult(candidate_name, True, author, 1.0, "orcid")
+
+    scopus_ids = set(_SCOPUS_ID_RE.findall(candidate_name or ""))
+    if scopus_ids:
+        for author in registry:
+            if author.scopus_id and author.scopus_id in scopus_ids:
+                return MatchResult(candidate_name, True, author, 1.0, "scopus_id")
+
+    wos_tokens = {token.upper() for token in _WOS_TOKEN_RE.findall(candidate_name or "")}
+    if wos_tokens:
+        for author in registry:
+            if author.wos_id and author.wos_id.upper() in wos_tokens:
+                return MatchResult(candidate_name, True, author, 1.0, "wos_id")
+
+    return None
+
+
 def match_author(
     candidate_name: str,
     registry: list[InternalAuthor],
@@ -503,6 +621,10 @@ def match_author(
     """
     if not candidate_name or not candidate_name.strip():
         return MatchResult(input_name=candidate_name, matched=False)
+
+    id_match = _match_external_id(candidate_name, registry)
+    if id_match is not None:
+        return id_match
 
     for author in registry:
         if author.full_name == candidate_name or author.full_name_reversed == candidate_name:

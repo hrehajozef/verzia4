@@ -15,6 +15,7 @@ function escHtml(str) {
 }
 
 const VALUE_SEPARATOR_RE = /\s*\|\|\s*/;
+const DETAIL_READ_ONLY = window.DETAIL_READ_ONLY === true || window.DETAIL_READ_ONLY === "true";
 
 function splitValues(value) {
   return (value || "")
@@ -216,540 +217,55 @@ function trackChange(fieldKey, newVal, origVal) {
 
 // ── Diff rendering pre Repozitár bunky ───────────────────────────────────────
 
-function renderRepozitarCell(td) {
-  if (!td) return;
-  const original = td.dataset.original || "";
-  const proposed = td.dataset.proposed || "";
-  const modified = changes[td.dataset.field];
-  const currentValue = modified !== undefined ? modified : (proposed || original || "");
+let authorSourcesModal = null;
 
-  if (td.dataset.field === "dc.contributor.author" && modified === undefined) {
-    td.classList.remove("cell-modified");
-    td.innerHTML = htmlWithBreaks(currentValue);
-    return;
+function _getAuthorSourcesModal() {
+  if (!authorSourcesModal) {
+    const el = document.getElementById("author-sources-modal");
+    if (!el || !window.bootstrap) return null;
+    authorSourcesModal = new bootstrap.Modal(el);
   }
+  return authorSourcesModal;
+}
 
-  if (td.dataset.field === "utb.contributor.internalauthor" && modified === undefined) {
-    td.classList.remove("cell-modified");
-    const authorsCell = document.querySelector('td[data-col-type="repozitar"][data-field="dc.contributor.author"]');
-    const authorsValue = authorsCell
-      ? (changes["dc.contributor.author"] !== undefined
-          ? changes["dc.contributor.author"]
-          : (authorsCell.dataset.proposed || authorsCell.dataset.original || ""))
-      : "";
-    if (authorsValue && normalizeStoredValue(authorsValue) !== normalizeStoredValue(currentValue)) {
-      td.innerHTML = diffHtml(authorsValue, currentValue);
-      if (proposed && normalizeStoredValue(original) !== normalizeStoredValue(proposed)) {
-        td.innerHTML +=
-          ` <button class="fix-badge ms-1" onclick="window.acceptFix(this.closest('td'))" title="Prijať návrh">✓ opraviť</button>`;
-      }
-    } else {
-      td.innerHTML = htmlWithBreaks(currentValue);
-    }
-    return;
-  }
+function _internalAuthorInfoButtonHtml() {
+  return (
+    '<button type="button" class="author-modal-trigger ms-2" ' +
+    'title="Zobrazi? zdroje autorov" aria-label="Zobrazi? zdroje autorov">?</button>'
+  );
+}
 
-  if (modified !== undefined) {
-    td.innerHTML =
-      `<span class="badge bg-warning text-dark me-1" style="font-size:.65rem">upravené</span>` +
-      escHtml(modified || "—");
-    td.classList.add("cell-modified");
+function _wrapInternalAuthorCell(contentHtml) {
+  return (
+    '<div class="d-flex align-items-start justify-content-between gap-2">' +
+    `<div class="flex-grow-1 min-w-0">${contentHtml}</div>` +
+    _internalAuthorInfoButtonHtml() +
+    '</div>'
+  );
+}
+
+function openAuthorSourcesModal() {
+  const body = document.getElementById("author-sources-modal-body");
+  if (!body) return;
+  const rows = Array.isArray(window.authorModalData) ? window.authorModalData : [];
+  if (!rows.length) {
+    body.innerHTML = '<tr><td colspan="3" class="text-muted">?iadne zdroje autorov.</td></tr>';
   } else {
-    td.classList.remove("cell-modified");
-    if (!original && !proposed) {
-      td.innerHTML = '<span class="text-muted">—</span>';
-    } else if (original && proposed && original !== proposed && dmp) {
-      const diffs    = dmp.diff_main(original, proposed);
-      dmp.diff_cleanupSemantic(diffs);
-      const diffHtml = diffs
-        .map(([type, text]) => {
-          const esc = escHtml(text);
-          if (type ===  1) return `<span class="diff-insert">${esc}</span>`;
-          if (type === -1) return `<span class="diff-delete">${esc}</span>`;
-          return esc;
-        })
-        .join("");
-      td.innerHTML = diffHtml +
-        ` <button class="fix-badge ms-1" onclick="window.acceptFix(this.closest('td'))" title="Prijať návrh">✓ opraviť</button>`;
-    } else if (proposed && !original) {
-      td.innerHTML =
-        `<span class="proposed-add">${escHtml(proposed)}</span>` +
-        ` <button class="fix-badge ms-1" onclick="window.acceptFix(this.closest('td'))" title="Prijať návrh">✓ použiť</button>`;
-    } else {
-      td.textContent = original;
-    }
+    body.innerHTML = rows.map((row) => {
+      const nameHtml = escHtml(row.name || "?");
+      const scopusAff = row.scopus_aff ? escHtml(row.scopus_aff) : '&mdash;';
+      const wosAff = row.wos_aff ? escHtml(row.wos_aff) : '&mdash;';
+      const rowClass = row.is_internal ? '' : 'author-source-external';
+      return (
+        '<tr>' +
+        `<td>${nameHtml}</td>` +
+        `<td class="${rowClass}">${scopusAff}</td>` +
+        `<td class="${rowClass}">${wosAff}</td>` +
+        '</tr>'
+      );
+    }).join('');
   }
-
-  _addFieldPicker(td);
-}
-
-// ── Faculty / OU picker – natívny <select> (renderuje nad overflow) ───────────
-// Natívny <select> vždy vykreslí OS-level popup, ktorý nie je ovplyvnený
-// CSS overflow: hidden ani overflow-x: auto na rodičovských elementoch.
-
-function _addFieldPicker(td) {
-  const field = td.dataset.field;
-  if (field !== "utb.faculty" && field !== "utb.ou") return;
-  if (td.dataset.editing === "true") return;
-
-  const isFaculty = field === "utb.faculty";
-
-  const select = document.createElement("select");
-  select.className = "form-select form-select-sm d-inline-block ms-1";
-  select.style.cssText = "width:auto; font-size:0.72rem; padding:1px 18px 1px 4px; height:auto; vertical-align:middle; max-width:160px;";
-
-  // Placeholder
-  const ph = document.createElement("option");
-  ph.value = "";
-  ph.textContent = "+ pridať…";
-  ph.selected = true;
-  ph.disabled = true;
-  select.appendChild(ph);
-
-  if (isFaculty) {
-    Object.entries(window.UTB_FACULTIES || {}).forEach(([abbr, name]) => {
-      const opt = document.createElement("option");
-      opt.value = name;
-      opt.textContent = `${abbr} – ${name}`;
-      select.appendChild(opt);
-    });
-  } else {
-    const departments = window.UTB_DEPARTMENTS || {};
-    const faculties   = window.UTB_FACULTIES   || {};
-    const byFaculty   = {};
-    Object.entries(departments).forEach(([dept, facId]) => {
-      if (!byFaculty[facId]) byFaculty[facId] = [];
-      byFaculty[facId].push(dept);
-    });
-    Object.entries(byFaculty).forEach(([facId, depts]) => {
-      const grp = document.createElement("optgroup");
-      grp.label = `${facId} – ${faculties[facId] || ""}`;
-      depts.forEach((dept) => {
-        const opt = document.createElement("option");
-        opt.value = dept;
-        opt.textContent = dept;
-        grp.appendChild(opt);
-      });
-      select.appendChild(grp);
-    });
-  }
-
-  // Prevent propagation so td click handler doesn't trigger edit mode
-  select.addEventListener("mousedown", (e) => e.stopPropagation());
-  select.addEventListener("click",     (e) => e.stopPropagation());
-  select.addEventListener("change", (e) => {
-    e.stopPropagation();
-    if (select.value) {
-      _appendFieldValue(td, select.value);
-      // reset done by renderRepozitarCell which re-creates the select
-    }
-  });
-
-  td.appendChild(select);
-}
-
-function _appendFieldValue(td, value) {
-  const fieldKey = td.dataset.field;
-  const base = changes[fieldKey] !== undefined ? changes[fieldKey] : (td.dataset.original || "");
-  const parts = base ? base.split(" || ").map((s) => s.trim()).filter(Boolean) : [];
-  if (!parts.includes(value)) parts.push(value);
-  changes[fieldKey] = parts.join(" || ");
-  updateSaveButton();
-  renderRepozitarCell(td);
-}
-
-// ── Vlastné kontextové menu pre autorov ──────────────────────────────────────
-// Namiesto Bootstrap dropdown – renderuje sa cez position:fixed na body,
-// takže nie je ovplyvnené overflow:hidden na .authors-panel.
-
-function _closeAuthorMenu() {
-  const m = document.getElementById("_author-ctx-menu");
-  if (m) m.remove();
-}
-
-function _showAuthorMenu(anchorEl, displayName) {
-  _closeAuthorMenu();
-
-  const rect = anchorEl.getBoundingClientRect();
-  const menu = document.createElement("div");
-  menu.id = "_author-ctx-menu";
-  menu.style.cssText = [
-    "position:fixed",
-    `top:${rect.bottom + 3}px`,
-    `right:${window.innerWidth - rect.right}px`,
-    "z-index:9999",
-    "background:#fff",
-    "border:1px solid #dee2e6",
-    "border-radius:5px",
-    "box-shadow:0 4px 12px rgba(0,0,0,.15)",
-    "min-width:200px",
-    "padding: 10px 10px",
-    "font-size:0.82rem",
-  ].join(";");
-
-  function item(label, onClick, danger) {
-    const btn = document.createElement("button");
-    btn.type = "button";
-    btn.className = "dropdown-item" + (danger ? " text-danger" : "");
-    btn.textContent = label;
-    btn.addEventListener("click", (e) => { e.stopPropagation(); _closeAuthorMenu(); onClick(); });
-    return btn;
-  }
-
-  menu.appendChild(item("Pridať k interným autorom", () => {
-    window.addAuthorToInternalList(displayName);
-  }));
-
-  const hr = document.createElement("hr");
-  hr.className = "dropdown-divider my-3";
-  menu.appendChild(hr);
-
-  menu.appendChild(item("Vymazať z databázy", () => {
-    if (!confirm(`Odstrániť "${displayName}" z databázy?`)) return;
-    fetch("/api/authors", {
-      method: "DELETE",
-      headers: { "Content-Type": "application/x-www-form-urlencoded" },
-      body: "display_name=" + encodeURIComponent(displayName),
-    })
-      .then((r) => r.text())
-      .then((html) => {
-        const list = document.getElementById("authors-list");
-        if (list) list.innerHTML = html;
-      })
-      .catch((err) => console.error("Delete author error:", err));
-  }, true));
-
-  document.body.appendChild(menu);
-
-  // Adjust if menu goes below viewport
-  const menuRect = menu.getBoundingClientRect();
-  if (menuRect.bottom > window.innerHeight - 8) {
-    menu.style.top = `${rect.top - menuRect.height - 3}px`;
-  }
-}
-
-// Close menu on outside click
-document.addEventListener("click", (e) => {
-  if (!e.target.closest("#_author-ctx-menu") && !e.target.closest(".author-menu-btn")) {
-    _closeAuthorMenu();
-  }
-});
-
-// Open menu on ⋮ button click (event delegation – works for HTMX-refreshed lists too)
-document.addEventListener("click", (e) => {
-  const btn = e.target.closest(".author-menu-btn");
-  if (!btn) return;
-  e.stopPropagation();
-  const displayName = btn.dataset.displayName;
-  if (!displayName) return;
-  // Toggle
-  const existing = document.getElementById("_author-ctx-menu");
-  if (existing) { _closeAuthorMenu(); return; }
-  _showAuthorMenu(btn, displayName);
-});
-
-// ── Pridanie autora do bunky interných autorov ───────────────────────────────
-
-window.addAuthorToInternalList = function (displayName) {
-  const td = document.querySelector('td[data-field="utb.contributor.internalauthor"]');
-  if (!td) { alert("Bunka 'Interní autori' nebola nájdená v tabuľke."); return; }
-  _appendFieldValue(td, displayName);
-};
-
-// ── Inicializácia Repozitár buniek (klik → edit) ─────────────────────────────
-
-function initRepozitarCells() {
-  document.querySelectorAll("td[data-col-type='repozitar']").forEach((td) => {
-    td.style.cursor = "text";
-
-    td.addEventListener("click", (e) => {
-      // Native <select> already calls stopPropagation; this is a belt-and-suspenders check
-      if (e.target.tagName === "SELECT" || e.target.tagName === "OPTION") return;
-      if (e.target.classList.contains("fix-badge")) return;
-      if (td.dataset.editing === "true") return;
-
-      td.dataset.editing = "true";
-      const val =
-        changes[td.dataset.field] !== undefined
-          ? changes[td.dataset.field]
-          : valueForEdit(td.dataset.proposed || td.dataset.original || "");
-
-      td.contentEditable = "true";
-      td.textContent = val;
-      td.style.outline = "2px solid #0d6efd";
-      td.classList.add("editing");
-      td.focus();
-
-      try {
-        const range = document.createRange();
-        range.selectNodeContents(td);
-        range.collapse(false);
-        const sel = window.getSelection();
-        sel.removeAllRanges();
-        sel.addRange(range);
-      } catch (_) {}
-    });
-
-    td.addEventListener("blur", () => {
-      td.dataset.editing = "false";
-      td.contentEditable = "false";
-      td.style.outline   = "";
-      td.classList.remove("editing");
-      const newVal  = td.textContent.trim();
-      const origVal = td.dataset.original || "";
-      trackChange(td.dataset.field, newVal, origVal);
-      renderRepozitarCell(td);
-    });
-
-    td.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); td.blur(); }
-      if (e.key === "Escape") {
-        delete changes[td.dataset.field];
-        updateSaveButton();
-        td.dataset.editing = "false";
-        td.contentEditable = "false";
-        td.style.outline   = "";
-        td.classList.remove("editing");
-        renderRepozitarCell(td);
-      }
-    });
-  });
-}
-
-// ── Inicializácia WOS / Scopus buniek ────────────────────────────────────────
-
-function initSourceCells() {
-  document.querySelectorAll("td[data-col-type='wos'], td[data-col-type='scopus']").forEach((td) => {
-    const fieldKey = td.dataset.field || "";
-
-    td.addEventListener("focus", () => {
-      td.dataset.editing = "true";
-      const raw = changes[fieldKey] !== undefined
-        ? changes[fieldKey]
-        : valueForEdit(td.dataset.original || "");
-      td.textContent = raw;
-    });
-
-    td.addEventListener("blur", () => {
-      td.dataset.editing = "false";
-      const newVal  = td.textContent.trim();
-      const origVal = td.dataset.original || "";
-      if (!newVal) td.innerHTML = '<span class="text-muted">—</span>';
-      if (fieldKey) {
-        trackChange(fieldKey, newVal, origVal);
-        td.dataset.currentRaw = changes[fieldKey] !== undefined ? changes[fieldKey] : normalizeStoredValue(newVal);
-        td.classList.toggle("cell-modified", changes[fieldKey] !== undefined);
-        renderSourceCellDisplay(td);
-      }
-    });
-
-    td.addEventListener("keydown", (e) => {
-      if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); td.blur(); }
-      if (e.key === "Escape") {
-        const orig = td.dataset.original || "";
-        td.innerHTML = orig ? escHtml(orig) : '<span class="text-muted">—</span>';
-        delete changes[fieldKey];
-        updateSaveButton();
-        td.classList.remove("cell-modified");
-        td.blur();
-      }
-    });
-  });
-}
-
-// ── Accept fix ───────────────────────────────────────────────────────────────
-
-window.acceptFix = function (td) {
-  if (!td) return;
-  const proposed = td.dataset.proposed || "";
-  const fieldKey = td.dataset.field    || "";
-  if (!fieldKey) return;
-  changes[fieldKey] = proposed;
-  updateSaveButton();
-  renderRepozitarCell(td);
-};
-
-// ── Uloženie zmien ────────────────────────────────────────────────────────────
-
-window.saveAllChanges = async function () {
-  const entries = Object.entries(changes);
-  if (!entries.length) return;
-
-  const btn    = document.getElementById("save-all-btn");
-  const btnBot = document.getElementById("save-all-btn-bottom");
-  if (btn)    { btn.disabled    = true; btn.innerHTML    = "Ukladám…"; }
-  if (btnBot) { btnBot.disabled = true; btnBot.innerHTML = "Ukladám…"; }
-
-  try {
-    const resp = await fetch(`/record/${window.RESOURCE_ID}/save-fields`, {
-      method:  "POST",
-      headers: { "Content-Type": "application/json" },
-      body:    JSON.stringify({ fields: Object.fromEntries(entries) }),
-    });
-    const data = await resp.json();
-
-    if (data.ok) {
-      Object.keys(changes).forEach((k) => delete changes[k]);
-      document.querySelectorAll(".cell-modified").forEach((el) => el.classList.remove("cell-modified"));
-      if (btn)    { btn.disabled    = false; }
-      if (btnBot) { btnBot.disabled = false; }
-      updateSaveButton();
-    } else {
-      const errs = data.errors
-        ? Object.entries(data.errors).map(([k, v]) => `${k}: ${v}`).join("\n")
-        : (data.error || "Neznáma chyba");
-      alert("Chyba pri ukladaní:\n" + errs);
-      if (btn)    { btn.disabled = false; }
-      if (btnBot) { btnBot.disabled = false; }
-      updateSaveButton();
-    }
-  } catch (err) {
-    alert("Sieťová chyba: " + err.message);
-    if (btn)    { btn.disabled = false; }
-    if (btnBot) { btnBot.disabled = false; }
-    updateSaveButton();
-  }
-};
-
-window.approveRecord = async function () {
-  const active = document.activeElement;
-  if (active && active.isContentEditable) {
-    active.blur();
-  }
-
-  await new Promise((resolve) => window.setTimeout(resolve, 0));
-
-  const approveMsg = document.getElementById("approve-msg");
-  const payload = { fields: Object.fromEntries(Object.entries(changes)) };
-
-  const btn = document.getElementById("save-all-btn");
-  const btnBot = document.getElementById("save-all-btn-bottom");
-  if (btn) btn.disabled = true;
-  if (btnBot) btnBot.disabled = true;
-  setApproveButtonsBusy(true, "Schvaľujem…");
-
-  try {
-    const resp = await fetch(`/record/${window.RESOURCE_ID}/approve`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(payload),
-    });
-    const data = await resp.json();
-
-    if (!resp.ok || !data.ok) {
-      const errs = data.errors
-        ? Object.entries(data.errors).map(([k, v]) => `${k}: ${v}`).join("\n")
-        : (data.error || `HTTP ${resp.status}`);
-      throw new Error(errs);
-    }
-
-    Object.keys(changes).forEach((k) => delete changes[k]);
-    document.querySelectorAll(".cell-modified").forEach((el) => el.classList.remove("cell-modified"));
-    updateSaveButton();
-    if (approveMsg) {
-      approveMsg.innerHTML = '<div class="alert alert-success">Záznam schválený.</div>';
-    }
-    window.setTimeout(() => {
-      window.location = data.redirect || "/";
-    }, 400);
-  } catch (err) {
-    if (approveMsg) {
-      approveMsg.innerHTML = `<div class="alert alert-danger">Chyba pri schválení: ${escHtml(err.message || String(err))}</div>`;
-    } else {
-      alert("Chyba pri schválení:\n" + (err.message || String(err)));
-    }
-  } finally {
-    if (btn) btn.disabled = false;
-    if (btnBot) btnBot.disabled = false;
-    setApproveButtonsBusy(false);
-    updateSaveButton();
-  }
-};
-
-// ── Crossref – inline plnenie tabuľky ────────────────────────────────────────
-
-function initSaveShortcut() {
-  document.addEventListener("keydown", (e) => {
-    const key = (e.key || "").toLowerCase();
-    if (key !== "s" || (!e.ctrlKey && !e.metaKey)) return;
-
-    e.preventDefault();
-    const active = document.activeElement;
-    if (active && active.isContentEditable) {
-      active.blur();
-    }
-    window.setTimeout(() => {
-      if (Object.keys(changes).length) {
-        window.saveAllChanges();
-      }
-    }, 0);
-  });
-}
-
-async function loadCrossref() {
-  const table   = document.getElementById("detail-table");
-  const spinner = document.getElementById("crossref-spinner");
-  if (!table) return;
-
-  const doi        = table.dataset.doi        || "";
-  const resourceId = table.dataset.resourceId || window.RESOURCE_ID || "";
-
-  if (!doi) { if (spinner) spinner.style.display = "none"; return; }
-
-  try {
-    const resp = await fetch(`/api/crossref/${resourceId}?doi=${encodeURIComponent(doi)}`);
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const data = await resp.json();
-
-    if (!data.ok) { console.warn("Crossref:", data.error); return; }
-
-    if (data.by_field) {
-      Object.entries(data.by_field).forEach(([fieldKey, value]) => {
-        const cfCell = document.querySelector(`td[data-cf-field="${CSS.escape(fieldKey)}"]`);
-        if (cfCell) renderCrossrefCell(cfCell, value);
-      });
-    }
-
-    const extraBody = document.getElementById("crossref-extra-body");
-    if (extraBody && data.extra && data.extra.length) {
-      const headerRow = document.createElement("tr");
-      headerRow.className = "crossref-section-header";
-      headerRow.innerHTML =
-        `<td colspan="5" class="text-muted small fw-semibold bg-light py-1 px-2"` +
-        ` style="border-top:2px solid #dee2e6;letter-spacing:.04em;">CROSSREF – ďalšie polia</td>`;
-      extraBody.appendChild(headerRow);
-      data.extra.forEach((f) => {
-        const tr = document.createElement("tr");
-        tr.className = "crossref-row";
-        tr.innerHTML =
-          `<td class="field-label text-muted small col-label">${escHtml(f.label)}</td>` +
-          `<td class="col-repozitar"></td><td class="col-wos"></td><td class="col-scopus"></td>` +
-          `<td class="col-crossref small">${escHtml(f.value)}</td>`;
-        extraBody.appendChild(tr);
-      });
-    }
-  } catch (err) {
-    console.warn("Crossref load error:", err);
-  } finally {
-    if (spinner) spinner.style.display = "none";
-  }
-}
-
-// ── Inicializácia po načítaní DOM ─────────────────────────────────────────────
-
-// Current rendering overrides. Kept near the end so older declarations above cannot win.
-function trackChange(fieldKey, newVal, origVal) {
-  if (!fieldKey) return;
-  const normalizedNew = normalizeStoredValue(newVal);
-  const normalizedOrig = normalizeStoredValue(origVal);
-  const empty = !normalizedNew || normalizedNew === "—";
-  const origEmpty = !normalizedOrig;
-  if ((empty && origEmpty) || normalizedNew === normalizedOrig) {
-    delete changes[fieldKey];
-  } else {
-    changes[fieldKey] = empty ? "" : normalizedNew;
-  }
-  updateSaveButton();
+  _getAuthorSourcesModal()?.show();
 }
 
 function renderRepozitarCell(td) {
@@ -757,34 +273,42 @@ function renderRepozitarCell(td) {
   const original = td.dataset.original || "";
   const proposed = td.dataset.proposed || "";
   const modified = changes[td.dataset.field];
-
-  if (td.dataset.field === "utb.contributor.internalauthor" && modified === undefined) {
-    td.classList.remove("cell-modified");
-    td.innerHTML = htmlWithBreaks(proposed || original);
-    return;
-  }
+  const needsAuthorInfo = td.dataset.field === "utb.contributor.internalauthor";
 
   if (modified !== undefined) {
-    td.innerHTML =
-      `<span class="badge bg-warning text-dark me-1" style="font-size:.65rem">upravené</span>` +
+    let content =
+      `<span class="badge bg-warning text-dark me-1" style="font-size:.65rem">upraven?</span>` +
       htmlWithBreaks(modified);
+    if (needsAuthorInfo) {
+      content = _wrapInternalAuthorCell(content);
+    }
+    td.innerHTML = content;
     td.classList.add("cell-modified");
   } else {
     td.classList.remove("cell-modified");
     if (!original && !proposed) {
-      td.innerHTML = '<span class="text-muted">—</span>';
+      td.innerHTML = '<span class="text-muted">&mdash;</span>';
     } else if (original && proposed && normalizeStoredValue(original) !== normalizeStoredValue(proposed)) {
-      td.innerHTML = diffHtml(original, proposed) +
-        ` <button class="fix-badge ms-1" onclick="window.acceptFix(this.closest('td'))" title="Prijať návrh">✓ opraviť</button>`;
+      td.innerHTML = diffHtml(original, proposed);
+      if (!DETAIL_READ_ONLY) {
+        td.innerHTML += ` <button class="fix-badge ms-1" onclick="window.acceptFix(this.closest('td'))" title="Prija&#357; n&#225;vrh">&#10003; opravi&#357;</button>`;
+      }
     } else if (proposed && !original) {
-      td.innerHTML = htmlWithBreaks(proposed, "proposed-add") +
-        ` <button class="fix-badge ms-1" onclick="window.acceptFix(this.closest('td'))" title="Prijať návrh">✓ použiť</button>`;
+      td.innerHTML = htmlWithBreaks(proposed, "proposed-add");
+      if (!DETAIL_READ_ONLY) {
+        td.innerHTML += ` <button class="fix-badge ms-1" onclick="window.acceptFix(this.closest('td'))" title="Prija&#357; n&#225;vrh">&#10003; pou&#382;i&#357;</button>`;
+      }
     } else {
       td.innerHTML = htmlWithBreaks(original);
     }
+    if (needsAuthorInfo) {
+      td.innerHTML = _wrapInternalAuthorCell(td.innerHTML);
+    }
   }
 
-  _addFieldPicker(td);
+  if (!DETAIL_READ_ONLY) {
+    _addFieldPicker(td);
+  }
 }
 
 function _appendFieldValue(td, value) {
@@ -805,7 +329,7 @@ function renderSourceCellDisplay(td) {
   if (!td || td.dataset.editing === "true") return;
   const raw = td.dataset.currentRaw || td.dataset.original || "";
   if (!raw) {
-    td.innerHTML = '<span class="text-muted">—</span>';
+    td.innerHTML = '<span class="text-muted">???</span>';
     return;
   }
   const row = td.closest("tr");
@@ -824,6 +348,14 @@ function renderSourceCellDisplay(td) {
   }
   td.innerHTML = htmlWithBreaks(raw);
 }
+
+document.addEventListener("click", (e) => {
+  const trigger = e.target.closest(".author-modal-trigger");
+  if (!trigger) return;
+  e.preventDefault();
+  e.stopPropagation();
+  openAuthorSourcesModal();
+});
 
 function renderCrossrefCell(cfCell, value) {
   if (!cfCell) return;
@@ -846,42 +378,168 @@ function renderCrossrefCell(cfCell, value) {
   }
 }
 
-function _showAuthorMenu(anchorEl, displayName) {
-  _closeAuthorMenu();
+let sidebarAuthorInfoModal = null;
+let sidebarAuthorMenu = null;
 
-  const rect = anchorEl.getBoundingClientRect();
-  const menu = document.createElement("div");
-  menu.id = "_author-ctx-menu";
-  menu.style.cssText = [
-    "position:fixed",
-    `top:${rect.bottom + 3}px`,
-    `right:${window.innerWidth - rect.right}px`,
-    "z-index:9999",
-    "background:#fff",
-    "border:1px solid #dee2e6",
-    "border-radius:5px",
-    "box-shadow:0 4px 12px rgba(0,0,0,.15)",
-    "min-width:200px",
-    "padding:10px",
-    "font-size:0.82rem",
-  ].join(";");
-
-  const addBtn = document.createElement("button");
-  addBtn.type = "button";
-  addBtn.className = "dropdown-item";
-  addBtn.textContent = "Pridať k interným autorom";
-  addBtn.addEventListener("click", (e) => {
-    e.stopPropagation();
-    _closeAuthorMenu();
-    window.addAuthorToInternalList(displayName);
-  });
-  menu.appendChild(addBtn);
-  document.body.appendChild(menu);
-
-  const menuRect = menu.getBoundingClientRect();
-  if (menuRect.bottom > window.innerHeight - 8) {
-    menu.style.top = `${rect.top - menuRect.height - 3}px`;
+function _getSidebarAuthorInfoModal() {
+  if (!sidebarAuthorInfoModal) {
+    const el = document.getElementById("author-info-modal");
+    if (!el || !window.bootstrap) return null;
+    sidebarAuthorInfoModal = new bootstrap.Modal(el);
   }
+  return sidebarAuthorInfoModal;
+}
+
+function _currentReturnTo() {
+  return window.location.pathname + window.location.search;
+}
+
+function _authorEditorUrl(rowRef) {
+  const params = new URLSearchParams();
+  if (rowRef) params.set("row_ref", rowRef);
+  params.set("return_to", _currentReturnTo());
+  return `/authors/editor?${params.toString()}`;
+}
+
+function _openAuthorEditor(rowRef) {
+  window.location.href = _authorEditorUrl(rowRef);
+}
+
+function _setModalValue(id, value) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.textContent = value || "—";
+}
+
+function _renderAuthorAffiliations(affiliations) {
+  if (!Array.isArray(affiliations) || !affiliations.length) {
+    return "—";
+  }
+  return affiliations
+    .map((aff) => `${aff.faculty || "—"} / ${aff.department || "—"}`)
+    .join("\n");
+}
+
+async function openSidebarAuthorModal(rowRef) {
+  const errorEl = document.getElementById("author-info-error");
+  if (errorEl) {
+    errorEl.classList.add("d-none");
+    errorEl.textContent = "";
+  }
+  try {
+    const response = await fetch(`/api/authors/row?row_ref=${encodeURIComponent(rowRef)}`);
+    const payload = await response.json();
+    if (!response.ok || !payload.ok) {
+      throw new Error(payload.error || "Nepodarilo sa načítať autora.");
+    }
+    const summary = payload.summary || {};
+    const author = payload.author || {};
+    _setModalValue("author-info-display-name", summary.display_name || author.display_name || "");
+    _setModalValue("author-info-surname", summary.surname || author.surname || "");
+    _setModalValue("author-info-given-name", summary.given_name || author.given_name || "");
+    _setModalValue("author-info-middle-name", summary.middle_name || author.middle_name || "");
+    _setModalValue("author-info-orcid", summary.orcid || author.orcid || "");
+    _setModalValue("author-info-scopusid", summary.scopusid || author.scopusid || "");
+    _setModalValue("author-info-wos-id", summary.wos_id || author.wos_id || author.researcherid || "");
+    _setModalValue("author-info-email", summary.preferred_email || "");
+
+    const affiliationsEl = document.getElementById("author-info-affiliations");
+    if (affiliationsEl) {
+      affiliationsEl.textContent = _renderAuthorAffiliations(summary.affiliations || []);
+      affiliationsEl.style.whiteSpace = "pre-line";
+    }
+
+    const openEditor = document.getElementById("author-info-open-editor");
+    if (openEditor) {
+      openEditor.href = _authorEditorUrl(rowRef);
+    }
+    _getSidebarAuthorInfoModal()?.show();
+  } catch (error) {
+    if (errorEl) {
+      errorEl.textContent = error.message || "Nepodarilo sa načítať autora.";
+      errorEl.classList.remove("d-none");
+    }
+    _getSidebarAuthorInfoModal()?.show();
+  }
+}
+
+function _internalAuthorTargetCell() {
+  return document.querySelector('td[data-col-type="repozitar"][data-field="utb.contributor.internalauthor"]');
+}
+
+function addSidebarAuthorToInternalAuthors(authorName) {
+  const td = _internalAuthorTargetCell();
+  if (!td || !authorName) return;
+  _appendFieldValue(td, authorName);
+}
+
+function _ensureSidebarAuthorMenu() {
+  if (sidebarAuthorMenu) return sidebarAuthorMenu;
+  sidebarAuthorMenu = document.createElement("div");
+  sidebarAuthorMenu.className = "dropdown-menu shadow";
+  sidebarAuthorMenu.style.position = "absolute";
+  sidebarAuthorMenu.style.display = "none";
+  sidebarAuthorMenu.innerHTML = [
+    '<button type="button" class="dropdown-item" data-action="append-internal">Pridať k interným autorom</button>',
+    '<button type="button" class="dropdown-item" data-action="open-editor">Otvoriť editor</button>',
+  ].join("");
+  document.body.appendChild(sidebarAuthorMenu);
+  sidebarAuthorMenu.addEventListener("click", (event) => {
+    const button = event.target.closest("[data-action]");
+    if (!button) return;
+    const action = button.dataset.action;
+    const rowRef = sidebarAuthorMenu.dataset.rowRef || "";
+    const authorName = sidebarAuthorMenu.dataset.authorName || "";
+    if (action === "append-internal") {
+      addSidebarAuthorToInternalAuthors(authorName);
+    } else if (action === "open-editor") {
+      _openAuthorEditor(rowRef);
+    }
+    sidebarAuthorMenu.style.display = "none";
+  });
+  return sidebarAuthorMenu;
+}
+
+function showSidebarAuthorMenu(button) {
+  const menu = _ensureSidebarAuthorMenu();
+  menu.dataset.rowRef = button.dataset.rowRef || "";
+  menu.dataset.authorName = button.dataset.authorName || "";
+  const rect = button.getBoundingClientRect();
+  menu.style.left = `${window.scrollX + rect.left}px`;
+  menu.style.top = `${window.scrollY + rect.bottom + 4}px`;
+  menu.style.display = "block";
+}
+
+function initAuthorSidebar() {
+  const addBtn = document.getElementById("add-author-btn");
+  if (addBtn) {
+    addBtn.addEventListener("click", () => _openAuthorEditor(""));
+  }
+
+  document.addEventListener("click", (event) => {
+    const menuButton = event.target.closest(".author-menu-btn");
+    if (menuButton) {
+      event.preventDefault();
+      event.stopPropagation();
+      showSidebarAuthorMenu(menuButton);
+      return;
+    }
+
+    const rowMain = event.target.closest(".author-row-main");
+    if (rowMain) {
+      const row = rowMain.closest(".author-row");
+      const rowRef = row?.dataset.rowRef || "";
+      if (rowRef) {
+        event.preventDefault();
+        openSidebarAuthorModal(rowRef);
+      }
+      return;
+    }
+
+    if (sidebarAuthorMenu && !event.target.closest(".dropdown-menu")) {
+      sidebarAuthorMenu.style.display = "none";
+    }
+  });
 }
 
 document.addEventListener("DOMContentLoaded", () => {
@@ -889,6 +547,7 @@ document.addEventListener("DOMContentLoaded", () => {
   document.querySelectorAll("td[data-col-type='wos'], td[data-col-type='scopus']").forEach(renderSourceCellDisplay);
   initRepozitarCells();
   initSourceCells();
+  initAuthorSidebar();
   initSaveShortcut();
   updateSaveButton();
   loadCrossref();

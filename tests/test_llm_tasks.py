@@ -78,6 +78,39 @@ def test_author_llm_filter_maps_registry_alias_back_to_preferred_repo_name():
     assert [entry.name for entry in result.internal_authors] == [preferred_name]
 
 
+def test_author_llm_filter_clears_ou_outside_allowed_workplaces():
+    registry = [
+        InternalAuthor(
+            surname="Novak",
+            firstname="Jan",
+            limited_author_id=1,
+        )
+    ]
+    allowed_names, allowed_map, preferred = _source_author_allowlist(["Novak, Jan"], registry)
+
+    result = _filter_by_registry(
+        LLMResult(
+            internal_authors=[
+                LLMAuthorEntry.model_validate(
+                    {
+                        "name": "Novak, Jan",
+                        "faculty": "Faculty of Technology",
+                        "ou": "Invented Department",
+                    },
+                    context={"allowed_workplaces": {"Department of Polymer Engineering"}},
+                )
+            ]
+        ),
+        registry,
+        allowed_names,
+        allowed_map,
+        preferred,
+        {"Department of Polymer Engineering"},
+    )
+
+    assert [entry.ou for entry in result.internal_authors] == [""]
+
+
 def test_year_only_llm_result_is_cleared():
     sanitized = _sanitize_year_only_llm_result(
         DateLLMResult(

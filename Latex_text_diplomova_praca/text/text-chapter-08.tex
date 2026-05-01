@@ -1,0 +1,82 @@
+% Kapitola 8: Návrh technického riešenia
+% Stav: draft
+
+\section{Návrh technického riešenia}
+
+Predchádzajúca kapitola pomenovala vstupné zdroje, problémy súčasného workflow a požiadavky, ktoré z neho vyplývajú. Na týchto východiskách stojí návrh technického riešenia. Cieľom tejto kapitoly je opísať architektúru aplikácie, jej dátový model a kľúčové návrhové rozhodnutia. Dôraz je kladený na to, aby boli jednotlivé časti vzájomne oddeliteľné, aby výstupy automatických krokov bolo možné spätne preskúmať a aby finálne rozhodnutie nad záznamom zostalo v rukách knihovníka.
+
+\subsection{Architektúra na úrovni komponentov}
+
+Aplikácia je rozdelená do dvoch logických vrstiev. Prvou je dátový pipeline, ktorý beží ako sada príkazov v príkazovom riadku a vykonáva nemiešanú prácu nad dátami, teda import, validáciu, detekciu autorov, normalizáciu dátumov a časopisov a deduplikáciu. Druhou vrstvou je webová aplikácia napísaná vo Flasku, ktorá poskytuje knihovníkovi rozhranie pre kontrolu, úpravu a schvaľovanie záznamov. Obe vrstvy zdieľajú spoločnú lokálnu databázu PostgreSQL a knižnicu spoločných modulov v adresári \texttt{src/}.
+
+Toto rozdelenie sleduje dva ciele. Po prvé umožňuje spúšťať dávkové spracovanie nezávisle od webovej aplikácie, napríklad v noci alebo v naplánovaných intervaloch cez systémový plánovač. Po druhé oddeľuje výpočtovo náročné kroky od krokov, ktoré vyžadujú interakciu s človekom. Pipeline pripravuje návrhy, používateľské rozhranie tieto návrhy vizualizuje a knihovník ich schvaľuje alebo upravuje.
+
+Z hľadiska tokov dát aplikácia komunikuje s tromi okruhmi systémov. Vstupom je interný repozitár publikácií knižnice UTB, ku ktorému sa pristupuje len na čítanie, prípadne zápis až vo finálnom kroku schválenia. Druhým okruhom sú externé bibliografické databázy WoS a Scopus, ktorých exporty sa importujú lokálne. Tretím okruhom sú externé referenčné služby, najmä Crossref REST API \cite{CrossrefRESTAPI}, voči ktorým aplikácia overuje a dopĺňa metadáta. Všetky LLM volania prebiehajú cez jednotný adaptér, ktorý sa dá v konfigurácii prepnúť medzi lokálnym a cloudovým režimom.
+
+Pre potreby tejto kapitoly stačí poznamenať, že každý krok pipeline zapisuje výstup do oddelenej pracovnej tabuľky, nie priamo do produkčného repozitára. Schematické zachytenie celkového dátového toku ako samostatný diagram je vhodné doplniť pri finálnej úprave práce.
+% TODO: doplniť diagram architektúry na úrovni komponentov; vložiť ako figure s label fig:architektura a v texte naň odkázať.
+
+\subsection{Dátový model a pracovné tabuľky}
+
+Centrálnou myšlienkou dátového modelu je oddelenie produkčných údajov, pracovných výstupov pipeline a zásobníka schvaľovaných zmien do troch samostatných vrstiev. Vďaka tomu je možné automatické kroky opakovane spúšťať bez rizika, že prepíšu manuálne potvrdené hodnoty.
+
+Prvú vrstvu tvorí lokálna kópia produkčnej tabuľky repozitára (\texttt{utb\_metadata\_arr}), ktorá vzniká príkazom \texttt{bootstrap-local-db}. Tento krok skopíruje stĺpce z remote PostgreSQL inštancie do lokálnej databázy a slúži ako vstupný snapshot pre celé spracovanie. Implementácia kopírovania je v \href{src/db/setup.py}{src/db/setup.py}, kde sa metadáta stĺpcov najprv načítajú z \texttt{information\_schema.columns} a následne sa použijú na vygenerovanie zodpovedajúceho \texttt{CREATE TABLE} v lokálnej databáze.
+
+Druhú vrstvu predstavuje pracovná tabuľka \texttt{utb\_processing\_queue}, do ktorej zapisujú všetky pipeline kroky. Štruktúru tabuľky a sadu výstupných stĺpcov definuje konštanta \texttt{OUTPUT\_COLUMNS} v module \href{src/common/constants.py}{src/common/constants.py}. Každá fáza pipeline má v tejto tabuľke vyhradené stĺpce pre svoj výstup (napríklad \texttt{author\_internal\_names}, \texttt{author\_faculty}, \texttt{utb\_date\_received}), pre stav spracovania (\texttt{author\_heuristic\_status}, \texttt{author\_llm\_status}) a pre príznaky (\texttt{author\_flags}, \texttt{date\_flags}), kam sa uchovávajú metadáta o priebehu rozhodnutia. Stavy sú reprezentované cez triedy \texttt{HeuristicStatus}, \texttt{LLMStatus}, \texttt{ValidationStatus} a \texttt{DateLLMStatus}, čím je zabezpečená konzistencia hodnôt v celej aplikácii.
+
+Treťou vrstvou je zásobník zmien \texttt{utb\_change\_buffer}, kde sa uchovávajú úpravy navrhnuté knihovníkom. Toto je miesto, kde končí webová aplikácia, keď používateľ stlačí Save alebo \texttt{Ctrl+S}. Až po explicitnom schválení sa zmeny premietajú do produkčnej databázy. Súčasťou modelu je aj samostatná história deduplikácie \texttt{dedup\_history}, ktorá zaznamenáva, ktoré záznamy boli zlúčené s ktorými a na základe akých kľúčov.
+
+Pre lokálne autoritatívne registre aplikácia využíva tabuľky \texttt{utb\_authors\_limited} a \texttt{utb\_authors}. Prvá obsahuje varianty mien interných autorov UTB a slúži najmä pri detekcii. Druhá je rozšírený editovateľný register, do ktorého môže knihovník pridávať nové osoby. Pre validáciu OBDID identifikátorov sa pristupuje na čítanie do remote tabuľky \texttt{veda.obd\_publikace}, čo je popísané v module \href{src/quality/checks.py}{src/quality/checks.py}, konkrétne vo funkcii \texttt{check\_obdid\_batch}.
+
+\subsection{Pipeline fázy a ich postupnosť}
+
+Pipeline je navrhnutý tak, aby každú fázu bolo možné spustiť samostatne. Súčasne má odporúčané poradie, v ktorom výstup jednej fázy vstupuje ako kontext do ďalšej. Inicializačné kroky pripravia tabuľky a skopírujú dáta. Validácia označí formálne chyby a navrhne ich opravy. Detekcia autorov pracuje s tým, čo prišlo z importu alebo z validácie. Extrakcia dátumov a normalizácia časopisov sú navzájom nezávislé a možno ich vykonávať v ľubovoľnom poradí. Deduplikácia je na konci, keď sú metadáta v očakávanej podobe.
+
+Rozdelenie do CLI príkazov, ktoré toto poradie dodržuje, je nasledovné:
+
+\begin{itemize}
+    \item \texttt{bootstrap-local-db}, \texttt{setup-processing-queue}, \texttt{setup-dedup-history}: inicializácia tabuliek a kópia zo zdroja.
+    \item \texttt{validate-metadata}, \texttt{apply-validation-fixes}, \texttt{metadata-validation-status}: kontrola formálnych chýb a aplikácia návrhov.
+    \item \texttt{detect-authors}, \texttt{detect-authors-llm}, \texttt{compare-author-detection}, \texttt{author-detection-status}: heuristická detekcia interných autorov a voliteľný LLM fallback.
+    \item \texttt{extract-dates}, \texttt{extract-dates-llm}, \texttt{date-extraction-status}: parsovanie redakčných dátumov.
+    \item \texttt{normalize-journals}, \texttt{apply-journal-normalization}, \texttt{journal-normalization-status}: normalizácia časopisov a vydavateľov.
+    \item \texttt{deduplicate-records}, \texttt{deduplication-status}: odhalenie a zlúčenie duplicít.
+\end{itemize}
+
+LLM fallbacky sú zámerne samostatné príkazy, nie automatické pokračovanie heuristík. Dôvodom je, že lokálny aj cloudový model majú vyššiu prevádzkovú cenu (čas, prípadne API náklady) a v praxi sa spúšťajú len pre záznamy, ktoré heuristika označila ako nejednoznačné, teda nastavila stĺpec \texttt{author\_needs\_llm} alebo \texttt{date\_needs\_llm} na \texttt{TRUE}.
+
+Celý katalóg príkazov a ich popis pre webové rozhranie definuje \href{web/blueprints/pipeline/catalog.py}{web/blueprints/pipeline/catalog.py}. Skutočné spustenie príkazu z UI obsluhuje SSE runner v \href{web/blueprints/pipeline/routes.py}{web/blueprints/pipeline/routes.py}, ktorý streamuje výstup procesu do prehliadača v reálnom čase.
+
+\subsection{LLM komponenta}
+
+Použitie jazykového modelu je v aplikácii navrhnuté ako vymeniteľná vrstva s jednotným rozhraním. Cieľom je, aby aplikačný kód, ktorý LLM volá, nemusel vedieť, či bežne odpovedá lokálne nasadený Ollama model, alebo cloudový model za OpenAI-kompatibilným API. Toto rozhranie je v \href{src/llm/client.py}{src/llm/client.py}, kde sú implementované triedy \texttt{OllamaClient} a \texttt{CloudLLMCompatibleClient}, obe odvodené od abstraktnej \texttt{LLMClient}. Výber poskytovateľa určuje konfiguračná premenná \texttt{LLM\_PROVIDER}, ktorá sa načítava v \href{src/config/settings.py}{src/config/settings.py}.
+
+Nad klientom je postavená trieda \texttt{LLMSession} z modulu \href{src/llm/session.py}{src/llm/session.py}, ktorá zapuzdruje fixný kontext spracovania (systémový prompt, JSON schému a voliteľnú preambulu) a poskytuje jednoduché \texttt{ask(user\_message)} volanie pre každý spracúvaný záznam. Pre Ollamu sa využíva preamble vo forme úvodného dialógu s ukážkou správneho výstupu. Tento dialóg je rovnaký pre celú dávku záznamov, čo umožňuje modelu zdieľať predpočítané KV-cache medzi volaniami a urýchľuje spracovanie. Pre cloudový režim sa preamble nepoužíva, lebo zdieľanie KV-cache nie je v štandardnom OpenAI API exponované rovnakým spôsobom.
+
+Štruktúrované výstupy sú vynútené cez JSON schému, ktorá je súčasťou každej úlohy. Pre Ollamu sa schéma prenáša cez parameter \texttt{format} \cite{OllamaStructuredOutputs}, pre cloudový režim aplikácia využíva \texttt{response\_format} alebo function calling podľa toho, čo poskytovateľ podporuje \cite{OpenAIStructuredOutputs,OpenAIFunctionCalling}. Konkrétne úlohy (extrakcia interných autorov, parsovanie dátumov) sú implementované ako samostatné moduly v \href{src/llm/tasks/}{src/llm/tasks/}, kde každý modul definuje svoj systémový prompt, schému a parser výstupu.
+
+\subsection{Zdôvodnenie výberu technológií}
+
+Pri výbere konkrétnych nástrojov bola hlavným kritériom dlhodobá udržateľnosť riešenia v prostredí univerzitnej knižnice, kompatibilita s existujúcou infraštruktúrou a dostupnosť skúseností v rámci predchádzajúcich diplomových prác na FAI UTB.
+
+Ako programovací jazyk bol zvolený Python verzie 3.11 a vyšší. Dôvodom je široká dostupnosť knižníc pre prácu s dátami, integrácie s LLM klientmi a fakt, že rovnaký jazyk používa aj príbuzná diplomová práca P. Mikuleckého \cite{Mikulecky2025}, čo uľahčuje opätovné využitie myšlienok a porovnanie prístupov. Pre CLI rozhranie bol zvolený Typer, ktorý poskytuje deklaratívny zápis príkazov a automatické generovanie nápovedy. Webová vrstva je postavená na Flasku, čo nadväzuje na bakalársku prácu M. Koňaříka \cite{Konarik2025} a umožňuje prebrať existujúce vzory pre autentifikáciu UTB a štruktúru blueprintov. Plnohodnotnejší framework typu Django by pri rozsahu tejto aplikácie znamenal viac réžie, ako prínosov.
+
+Databázová vrstva je realizovaná cez SQLAlchemy 2.x s drajverom psycopg verzie 3 a pripája sa k PostgreSQL. Voľba PostgreSQL je daná tým, že na ňom beží aj produkčný repozitár UTB a aplikácia tak môže pracovať s rovnakými dátovými typmi vrátane polí (\texttt{TEXT[]}) a JSONB. Pre validáciu Python objektov sa používa Pydantic verzie 2 a pre parsovanie nečistých textov knižnica \texttt{ftfy}, ktorá rieši typické prípady mojibake. Pre fuzzy porovnávanie reťazcov je nasadená knižnica \texttt{jellyfish}, ktorá pokrýva edit-distance metriky aj Jaro-Winklerovu podobnosť \cite{Christen2012,Winkler1990}. HTTP volania na Crossref API obsluhuje \texttt{httpx} s podporou opakovaných pokusov a časových limitov.
+
+LLM vrstva má dve referenčné nasadenia. Pre lokálne behy sa používa Ollama s modelom radu \texttt{qwen3} v menšej veľkosti (8B parametrov), ktorá sa zmestí na bežné kancelárske GPU alebo aj na CPU pri rozumných časoch odozvy. Pre cloudové behy je ako referenčný poskytovateľ zvolený Groq, ktorého API explicitne dokumentuje OpenAI-kompatibilitu, takže ho možno volať tým istým klientom ako oficiálne OpenAI \cite{GroqOpenAICompatibility}. Aplikácia teda nezávisí od konkrétneho cloudového poskytovateľa a vie sa preorientovať podľa potreby.
+
+Pri prieskumnej analýze dát počas vývoja sa využila aj utilita DuckDB, najmä pri overovaní hypotéz nad exportmi WoS a Scopus a pri rýchlej kontrole, čo presne sa nachádza v poli \texttt{utb.fulltext.dates} v jednotlivých rokoch. DuckDB nie je súčasťou bežne behajúcej aplikácie, no v práci je relevantný preto, lebo formoval rozhodnutia o tom, ktoré dátové pravidlá sa dali pokryť deterministicky a kde bol naozaj potrebný LLM fallback.
+
+\subsection{Wireframy a UI návrh}
+
+Návrh používateľského rozhrania vychádzal z toho, ako knihovník reálne pracuje s tabuľkou v Google Sheets. Rozhranie preto kopíruje stĺpcový pohľad, kde popri sebe stoja hodnoty z rôznych zdrojov (Repozitár, WoS, Scopus, Crossref) a knihovník môže vizuálne porovnávať rozdiely. Cieľom nie je nahradiť ho úplne odlišnou interakciou, ale doplniť mu nástroje, ktoré v Sheets chýbali, najmä zvýrazňovanie rozdielov, asistované návrhy a auditovateľný zásobník zmien.
+
+Aplikácia má tri hlavné obrazovky:
+
+\begin{itemize}
+    \item \textbf{Zoznam záznamov} (\texttt{/}), kde knihovník vidí prehľad importovaných publikácií, ich stav spracovania, prípadné varovania a duplicitné dvojice.
+    \item \textbf{Detail záznamu} (\texttt{/record/<resource\_id>}), ktorý je centrálnou pracovnou plochou. Obsahuje editovateľnú tabuľku polí so zvýraznenými rozdielmi medzi zdrojmi, akcie pre uloženie zmien do zásobníka a krátku históriu.
+    \item \textbf{Nastavenia pipeline} (\texttt{/settings/pipeline}), kde je možné spustiť jednotlivé príkazy pipeline aj v rámci odporúčaného poradia. Stránka prijíma SSE výstup z bežiaceho procesu a zobrazuje ho v reálnom čase.
+\end{itemize}
+
+Pomocné nastavenia, napríklad konfigurovateľné poradie riadkov v detaile záznamu (\texttt{/settings/row-order}), sú k dispozícii pre pracovníkov, ktorí preferujú odlišné usporiadanie polí. Wireframy detailu záznamu, vrátane editácie autorov a afiliácií, vznikli ešte pred implementáciou v podobe interaktívnych prototypov a vychádzali z reálneho príkladu duplicitného záznamu z Web of Science a Scopusu.

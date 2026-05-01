@@ -84,6 +84,7 @@ def test_get_record_detail_overlays_pending_change_and_skips_missing_fields(monk
         ),
     )
     monkeypatch.setattr(queue_service, "_author_source_values", lambda *args, **kwargs: {"wos": None, "scopus": None})
+    monkeypatch.setattr(queue_service, "_merged_source_records", lambda *args, **kwargs: [])
     monkeypatch.setattr(queue_service, "get_detail_row_order", lambda: ["dc.title.translated", "dc.title"])
 
     conn = MagicMock()
@@ -140,6 +141,7 @@ def test_get_record_detail_keeps_legacy_fulltext_fields_separate_from_utb_facult
         ),
     )
     monkeypatch.setattr(queue_service, "_author_source_values", lambda *args, **kwargs: {"wos": None, "scopus": None})
+    monkeypatch.setattr(queue_service, "_merged_source_records", lambda *args, **kwargs: [])
     monkeypatch.setattr(
         queue_service,
         "get_detail_row_order",
@@ -202,6 +204,7 @@ def test_get_record_detail_uses_queue_values_as_main_for_date_fields(monkeypatch
         ),
     )
     monkeypatch.setattr(queue_service, "_author_source_values", lambda *args, **kwargs: {"wos": None, "scopus": None})
+    monkeypatch.setattr(queue_service, "_merged_source_records", lambda *args, **kwargs: [])
     monkeypatch.setattr(queue_service, "get_detail_row_order", lambda: ["utb_date_received"])
 
     conn = MagicMock()
@@ -220,3 +223,151 @@ def test_get_record_detail_uses_queue_values_as_main_for_date_fields(monkeypatch
 
     fields = {field["key"]: field for field in detail["fields"]}
     assert fields["utb_date_received"]["main"] == "2024-03-15"
+
+
+def test_get_record_detail_includes_merged_sources_summary(monkeypatch):
+    monkeypatch.setattr(queue_service, "ensure_change_buffer_table", lambda engine=None: None)
+    monkeypatch.setattr(
+        queue_service,
+        "_load_table_columns",
+        lambda engine, schema, table: (
+            {
+                "resource_id": "int8",
+                "dc.title": "_text",
+                "utb.source": "_text",
+            }
+            if table == settings.local_table
+            else {
+                "resource_id": "int8",
+                "librarian_checked_at": "_timestamptz",
+            }
+        ),
+    )
+    monkeypatch.setattr(queue_service, "_author_source_values", lambda *args, **kwargs: {"wos": None, "scopus": None})
+    monkeypatch.setattr(queue_service, "get_detail_row_order", lambda: ["dc.title"])
+
+    conn = MagicMock()
+    conn.__enter__ = lambda s: conn
+    conn.__exit__ = MagicMock(return_value=False)
+    conn.execute.side_effect = [
+        _result(fetchone={"resource_id": 1, "dc.title": ["Merged title"], "utb.source": ["j-riv"]}),
+        _result(fetchone={"resource_id": 1, "librarian_checked_at": None}),
+        _result(fetchall=[]),
+        _result(fetchall=[
+            {
+                "history_row_ref": "(0,1)",
+                "resource_id": 1,
+                "dedup_match_type": "exact:dc.identifier.doi",
+                "dedup_match_score": 1.0,
+                "dedup_match_details": {"matched_value": "10.1234/demo"},
+                "dedup_merged_at": "2026-04-30 10:15:00",
+                "dedup_kept_resource_id": 1,
+                "dedup_other_resource_id": 123,
+            },
+            {
+                "history_row_ref": "(0,2)",
+                "resource_id": 123,
+                "dedup_match_type": "exact:dc.identifier.doi",
+                "dedup_match_score": 1.0,
+                "dedup_match_details": {"matched_value": "10.1234/demo"},
+                "dedup_merged_at": "2026-04-30 10:15:00",
+                "dedup_kept_resource_id": 1,
+                "dedup_other_resource_id": 123,
+            },
+            {
+                "history_row_ref": "(0,3)",
+                "resource_id": 456,
+                "dedup_match_type": "fuzzy_title",
+                "dedup_match_score": 0.97,
+                "dedup_match_details": {"title_similarity": 0.97},
+                "dedup_merged_at": "2026-04-30 10:10:00",
+                "dedup_kept_resource_id": 1,
+                "dedup_other_resource_id": 456,
+            },
+        ]),
+    ]
+
+    engine = MagicMock()
+    engine.connect.return_value = conn
+
+    detail = queue_service.get_record_detail("1", engine=engine)
+
+    assert detail is not None
+    assert [item["resource_id"] for item in detail["merged_sources"]] == ["1", "123", "456"]
+    assert detail["merged_sources"][0]["is_kept_original"] is True
+    assert detail["merged_sources"][1]["match_type"] == "exact:dc.identifier.doi"
+    assert detail["merged_sources"][1]["match_score"] == 1.0
+    assert detail["merged_sources"][1]["history_row_ref"] == "(0,2)"
+
+
+def test_get_history_record_detail_returns_read_only_detail(monkeypatch):
+    monkeypatch.setattr(
+        queue_service,
+        "_load_table_columns",
+        lambda engine, schema, table: {
+            "resource_id": "int8",
+            "dc.title": "_text",
+            "dc.contributor.author": "_text",
+            "utb.source": "_text",
+        },
+    )
+    monkeypatch.setattr(queue_service, "_author_source_values", lambda *args, **kwargs: {"wos": None, "scopus": None})
+    monkeypatch.setattr(queue_service, "get_detail_row_order", lambda: ["dc.title", "dc.contributor.author"])
+    monkeypatch.setattr(
+        queue_service,
+        "_get_history_record_row",
+        lambda row_ref, engine=None: {
+            "history_row_ref": row_ref,
+            "resource_id": 5157,
+            "dc.title": ["Pôvodný názov"],
+            "dc.contributor.author": ["Autor, Test"],
+            "utb.source": ["scopus"],
+            "dedup_kept_resource_id": 4297,
+            "dedup_other_resource_id": 5157,
+            "dedup_match_type": "exact:dc.identifier.doi",
+            "dedup_match_score": 1.0,
+            "dedup_merged_at": "2026-04-30 10:15:00",
+        },
+    )
+
+    detail = queue_service.get_history_record_detail("(0,9)", engine=MagicMock())
+
+    assert detail is not None
+    assert detail["read_only"] is True
+    assert detail["is_history"] is True
+    assert detail["pending_changes"] == []
+    assert detail["history_info"]["kept_resource_id"] == "4297"
+    fields = {field["key"]: field for field in detail["fields"]}
+    assert fields["dc.title"]["main"] == "Pôvodný názov"
+
+
+
+def test_author_modal_data_aligns_repo_authors_with_scopus_and_wos_affiliations():
+    main_data = {
+        "dc.contributor.author": ["Belas, Jaroslav", "Strnad, Zdenek"],
+        "utb.scopus.affiliation": [
+            "Belas J., Tomas Bata University in Zlin, Faculty of Management and Economics, Zlin, Czech Republic; "
+            "Strnad Z., University of South Bohemia, Ceske Budejovice, Czech Republic"
+        ],
+        "utb.wos.affiliation": [
+            "[Belas, Jaroslav] Tomas Bata Univ Zlin, Fac Management & Econ, Zlin, Czech Republic; "
+            "[Strnad, Zdenek] Univ South Bohemia, Ceske Budejovice, Czech Republic"
+        ],
+    }
+
+    rows = queue_service._author_modal_data(main_data, "Belas, Jaroslav")
+
+    assert rows == [
+        {
+            "name": "Belas, Jaroslav",
+            "is_internal": True,
+            "scopus_aff": "Tomas Bata University in Zlin, Faculty of Management and Economics, Zlin, Czech Republic",
+            "wos_aff": "Tomas Bata Univ Zlin, Fac Management & Econ, Zlin, Czech Republic",
+        },
+        {
+            "name": "Strnad, Zdenek",
+            "is_internal": False,
+            "scopus_aff": "University of South Bohemia, Ceske Budejovice, Czech Republic",
+            "wos_aff": "Univ South Bohemia, Ceske Budejovice, Czech Republic",
+        },
+    ]

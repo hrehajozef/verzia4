@@ -1,0 +1,94 @@
+% ============================================================================ %
+% Encoding: UTF-8 (žluťoučký kůň úpěl ďábelšké ódy)
+% ============================================================================ %
+
+\section{Vkládání obrázků, tabulek, rovnic a citací}
+
+Předpokládá se, že zájemce o \LaTeX{ovou} šablonu má již alespoň drobné zkušenosti s tímto sazebním systémem nebo s programováním obecně. Pokud tomu tak není, základní informace, instrukce a~návody lze pohodlně dohledat na internetu v českém i v anglickém jazyce. Příkladem budiž seriál článků viz \cite{ROOT2003}.
+
+V této kapitole jsou prezentovány příklady vložení obrázků, tabulek, rovnice a~různorodých citací včetně doprovodných komentářů jak v tomto výstupním PDF, tak ve zdrojovém kódu.
+
+% ---------------------------------------------------------------------------- %
+\subsection{Obrázky}
+Obrázek \ref{fig:logo} představuje logo univerzity. Ve zdrojovém kódu tohoto dokumentu je názorně prezentováno, jak obrázek vložit, jak mu nastavit šířku, titulek a~také jak uvést zdroj.
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.6\linewidth]{graphics/logo_utb_cz.png}
+  \caption[Krátký titulek bez uvedení zdroje (bude využit v seznamu obrázků)]{Titulek vloženého obrázku i~s~následným uvedením zdroje na dalším řádku (bude vysázeno přímo pod obrázkem) \\ \textnormal{\textit{(zdroj: \citealp{VizualUTB2023})}}} % pro číslované odkazy na zdroje je vhodné použít \cite{VizualUTB2023}
+  \label{fig:logo}
+\end{figure}
+
+% Neodsazování prvních řádků prvních odstavců nacházejících se hned za tabulkou, obrázkem, výpisem, ... např. pomocí následujícího příkazu
+\noindent
+Pozor! Obrázek nesmí obsahovat alfa kanál (průhlednost). Výsledné PDF by následně nesplňovalo požadavky standardu PDF/A.
+
+% ---------------------------------------------------------------------------- %
+\subsection{Tabulky}
+Tabulka \ref{tab:example1} obsahuje dva řádky a celkem 7 sloupců. Dále, v Tabulce \ref{tab:example2} je ukázáno, jak pracovat se zvýrazňováním/výplní řádků.
+
+\begin{table}[ht]
+  \caption{Titulek tabulky}
+  \label{tab:example1}
+  \centering
+  \begin{tabular}{|l|c|c|c|c|c|r|}
+    \hline
+    & 1 & 2 & 3 & 4 & 5 & Cena [Kč] \\ \hline
+    \emph{F} & (jedna) & (dva) & (tři) & (čtyři) & (pět) & 300 \\ \hline
+  \end{tabular}
+\end{table}
+
+\begin{table}[hbt]
+  % Ukázka zápisu zkrácené verze titulku a citace:
+  \caption[Krátký titulek do seznamu tabulek]{Dlouhý titulek, který bude v textu práce i s uvedením zdroje \\ \textnormal{\textit{(zdroj: \citealp{VizualUTB2023})}}}
+  \label{tab:example2}
+  \centering   
+  % Ukázka nastavení střídání pozadí řádků: světle šedé/transparentní.
+  \rowcolors{2}{}{gray!10}
+  \begin{tabular}{|l|c|c|c|c|c|r|}
+    \hline
+     & 1 & 2 & 3 & 4 & 5 & Cena [Kč] \\ \hline
+    \emph{F} & (jedna) & (dva) & (tři) & (čtyři) & (pět) & 300 \\ \hline
+    \emph{F} & (jedna) & (dva) & (tři) & (čtyři) & (pět) & 300 \\ \hline
+    \emph{F} & (jedna) & (dva) & (tři) & (čtyři) & (pět) & 300 \\ \hline
+  \end{tabular}
+\end{table}
+
+\noindent
+Nezapomeňte vést textový odkaz na veškeré vložené obrázky a tabulky (př.: „Tabulka X uvádí statistiku nehodovosti v kraji Y“).
+
+
+% ---------------------------------------------------------------------------- %
+\subsection{Rovnice}
+Následuje ukázka zápisu rovnice (\ref{eq:example1}), ve které se nachází jedna neznámá, $x$.
+\begin{equation}
+    \label{eq:example1}
+    \int_0^1 x^2 \sin(x) \, dx = \left[ -x^2 \cos(x) \right]_0^1 + \int_0^1 2x \cos(x) \, dx
+\end{equation}
+
+\noindent
+\LaTeX je velmi vhodný nástroj pro zápis matematických výrazů. Jejich výsledný vysázený zápis v PDF je na vysoké úrovni.
+
+% ---------------------------------------------------------------------------- %
+\subsection{Citování}
+Je naprosto zásadní dodržovat citační normu ČSN ISO 690:2022 týkající se bibliografických citací. Citování v \LaTeX{u} je v tomto ohledu velmi snadné. Vše je již totiž připraveno. Postačí si vytvořit databanku referencí v souboru references.bib a tyto zdroje následně v textu velmi jednoduše citovat prostřednictvím k tomu určeného příkazu (ukázka opět ve zdrojovém kódu následujícího seznamu). Následují příklady odkazování na zdroje různých typů:
+\begin{itemize}
+  \item kniha \citep{HRW1997}, alternativně lez uvést, že \citet{HRW1997} uvádí přehled\dots,
+  \item kapitola v knize \citep[s.~243--247]{Delorme2006}, navíc s ukázkou citování konkrétního rozsahu stran (hodí se mimo jiné u přímých citací),
+  \item článek v časopisu \citep{Kab2020},
+  \item brožura \citep{Farkasova2023},
+  \item konferenční příspěvek \citep{Judish1999},
+  \item disertační práce \citep{Valente2005},
+  \item technická zpráva \citep{Fralick1997},
+  \item zdroj online \citep{CVUT2009}, navíc s ukázkou toho, jak citovat zdroj, ve~kterém nelze dohledat rok vydání prostřednictvím b.r., tedy bez roku; všimněte si také prosím toho, jakým způsobem je v references.bib zapsán název autora/instituce, aby byl správně vysázen,
+  \item speciální případ zdroje online \citep{ZnalostniInzernyrstvi2019}, u kterého není dostupná informace o autorovi, způsob zápisu lze proto realizovat viz záznam v bibliografické databázi references.bib, řazení je v tomto případě zajištěno nikoliv autorem, ale uživatelem definovaným klíčem (key, viz references.bib), raritní případ,
+  \item zákon dostupný online \citep{Zakon239},
+  \item v úvodu kapitoly avizovaná webová stránka \citep{ROOT2003}, s tímto záznamem mimochodem souvisí ukázka vyřešení chybného zařazení záznamu v seznamu použitých zdrojů (kvůli diakritice v příjmení autora není záznam korektně zařazen podle abecedy; řešení viz references.bib),
+  \item odkaz na vícero zdrojů současně \citep{Fralick1997,Farkasova2023,Valente2005}.
+\end{itemize}
+
+\noindent
+Více o citování je k dohledání mimo jiné na webových stránkách knihovny \citep{KUTB2024}, kde jsou dostupné manuály, citační tahák i odkazy na doporučované nástroje.
+
+
+% ============================================================================ %
