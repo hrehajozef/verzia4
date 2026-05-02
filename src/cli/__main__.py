@@ -156,7 +156,7 @@ def heuristics_run(
     normalize:        bool       = typer.Option(False, "--normalize",        help="Porovnávať mená aj na normalizovaných hodnotách (bez diakritiky, lowercase) + fuzzy. Štandardne vypnuté – porovnáva sa na surových hodnotách."),
 ) -> None:
     """Heuristické spracovanie mien a afiliácií autorov."""
-    from src.authors.heuristics import run_heuristics
+    from src.authors.heuristics_runner import run_heuristics
     run_heuristics(batch_size=batch_size, limit=limit, reprocess_errors=reprocess_errors, reprocess=reprocess, normalize=normalize)
 
 
@@ -179,7 +179,7 @@ def heuristics_compare() -> None:
 
     Zobrazí štatistiky: presná zhoda, čiastočná zhoda, bez prieniku, len jeden zdroj.
     """
-    from src.authors.heuristics import compare_with_librarian
+    from src.authors.heuristics_support import compare_with_librarian
     compare_with_librarian()
 
 

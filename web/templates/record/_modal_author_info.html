@@ -1,0 +1,41 @@
+<div class="modal fade" id="author-info-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title">UTB autor</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Zavrieť"></button>
+      </div>
+      <div class="modal-body">
+        <div id="author-info-error" class="alert alert-danger d-none py-2 px-3 small"></div>
+        <dl class="row small mb-0">
+          <dt class="col-sm-4">Display name</dt>
+          <dd class="col-sm-8" id="author-info-display-name">—</dd>
+          <dt class="col-sm-4">Surname</dt>
+          <dd class="col-sm-8" id="author-info-surname">—</dd>
+          <dt class="col-sm-4">Given name</dt>
+          <dd class="col-sm-8" id="author-info-given-name">—</dd>
+          <dt class="col-sm-4">Middle name</dt>
+          <dd class="col-sm-8" id="author-info-middle-name">—</dd>
+          <dt class="col-sm-4">ORCID</dt>
+          <dd class="col-sm-8" id="author-info-orcid">—</dd>
+          <dt class="col-sm-4">Scopus ID</dt>
+          <dd class="col-sm-8" id="author-info-scopusid">—</dd>
+          <dt class="col-sm-4">WoS ID</dt>
+          <dd class="col-sm-8" id="author-info-wos-id">—</dd>
+          <dt class="col-sm-4">Fakulty a pracoviská</dt>
+          <dd class="col-sm-8" id="author-info-affiliations">—</dd>
+          <dt class="col-sm-4">E-mail</dt>
+          <dd class="col-sm-8" id="author-info-email">—</dd>
+        </dl>
+      </div>
+      <div class="modal-footer">
+        <a id="author-info-open-editor"
+           class="btn btn-outline-primary btn-sm"
+           href="{{ url_for('records.author_editor') }}">
+          Otvoriť v samostatnom okne
+        </a>
+        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Zavrieť</button>
+      </div>
+    </div>
+  </div>
+</div>

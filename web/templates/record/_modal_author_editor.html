@@ -1,0 +1,46 @@
+<div class="modal fade" id="author-editor-modal" tabindex="-1" aria-hidden="true">
+  <div class="modal-dialog modal-lg modal-dialog-scrollable">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h5 class="modal-title" id="author-editor-title">UTB autor</h5>
+        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Zavrieť"></button>
+      </div>
+      <div class="modal-body">
+        <div id="author-editor-error" class="alert alert-danger d-none py-2 px-3 small"></div>
+        <form id="author-editor-form" class="row g-3">
+          {% for column in author_editor.columns %}
+          <div class="col-md-6">
+            <label class="form-label small fw-semibold" for="author-field-{{ column.name }}">{{ column.label }}</label>
+            {% if column.kind == "select" %}
+            <select class="form-select form-select-sm"
+                    id="author-field-{{ column.name }}"
+                    name="{{ column.name }}"
+                    {% if column.required %}required{% endif %}>
+              <option value=""></option>
+              {% for option in column.options %}
+              <option value="{{ option }}">{{ option }}</option>
+              {% endfor %}
+            </select>
+            {% else %}
+            <input class="form-control form-control-sm"
+                   id="author-field-{{ column.name }}"
+                   name="{{ column.name }}"
+                   type="{{ 'number' if column.kind == 'number' else 'text' }}"
+                   {% if column.required %}required{% endif %}>
+            {% endif %}
+          </div>
+          {% endfor %}
+        </form>
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Zrušiť</button>
+        <button type="button"
+                id="author-editor-save-btn"
+                class="btn btn-primary btn-sm"
+                {% if not author_editor.can_write %}disabled{% endif %}>
+          Uložiť autora
+        </button>
+      </div>
+    </div>
+  </div>
+</div>

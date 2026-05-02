@@ -54,32 +54,32 @@ def _normalize_search(value: str) -> str:
     return " ".join(without_marks.lower().split())
 
 
-def _fetch_faculty_options(engine=None) -> list[str]:
-    engine = engine or get_remote_engine()
-    with engine.connect() as conn:
-        rows = conn.execute(text("""
-            SELECT e.enumlabel
-            FROM pg_type t
-            JOIN pg_enum e ON t.oid = e.enumtypid
-            JOIN pg_namespace n ON n.oid = t.typnamespace
-            WHERE t.typname = 'type_utb_authors_faculty'
-            ORDER BY e.enumsortorder
-        """)).fetchall()
+def _fetch_faculty_options_from_conn(conn) -> list[str]:
+    rows = conn.execute(text("""
+        SELECT e.enumlabel
+        FROM pg_type t
+        JOIN pg_enum e ON t.oid = e.enumtypid
+        JOIN pg_namespace n ON n.oid = t.typnamespace
+        WHERE t.typname = 'type_utb_authors_faculty'
+        ORDER BY e.enumsortorder
+    """)).fetchall()
     return [str(row.enumlabel) for row in rows]
 
 
-def _fetch_author_columns(engine=None) -> list[dict[str, Any]]:
+def _fetch_faculty_options(engine=None) -> list[str]:
     engine = engine or get_remote_engine()
     with engine.connect() as conn:
-        rows = conn.execute(text(f"""
-            SELECT column_name, data_type, udt_name, is_nullable, column_default, ordinal_position
-            FROM information_schema.columns
-            WHERE table_schema = :schema
-              AND table_name = :table
-            ORDER BY ordinal_position
-        """), {"schema": _SCHEMA, "table": _TABLE}).mappings().fetchall()
+        return _fetch_faculty_options_from_conn(conn)
 
-    faculty_options = _fetch_faculty_options(engine)
+
+def _fetch_author_columns_from_conn(conn, faculty_options: list[str]) -> list[dict[str, Any]]:
+    rows = conn.execute(text(f"""
+        SELECT column_name, data_type, udt_name, is_nullable, column_default, ordinal_position
+        FROM information_schema.columns
+        WHERE table_schema = :schema
+          AND table_name = :table
+        ORDER BY ordinal_position
+    """), {"schema": _SCHEMA, "table": _TABLE}).mappings().fetchall()
     columns: list[dict[str, Any]] = []
     for row in rows:
         column = {
@@ -100,6 +100,51 @@ def _fetch_author_columns(engine=None) -> list[dict[str, Any]]:
     return columns
 
 
+def _fetch_author_columns(engine=None) -> list[dict[str, Any]]:
+    engine = engine or get_remote_engine()
+    with engine.connect() as conn:
+        faculty_options = _fetch_faculty_options_from_conn(conn)
+        return _fetch_author_columns_from_conn(conn, faculty_options)
+
+
+def _can_write_authors_from_conn(conn) -> bool:
+    grants = conn.execute(text(f"""
+        SELECT privilege_type
+        FROM information_schema.role_table_grants
+        WHERE table_schema = :schema
+          AND table_name = :table
+          AND grantee = current_user
+    """), {"schema": _SCHEMA, "table": _TABLE}).fetchall()
+    available = {str(row.privilege_type).upper() for row in grants}
+    return {"SELECT", "INSERT", "UPDATE", "DELETE"}.issubset(available)
+
+
+def _fetch_author_rows_from_conn(conn) -> list[dict[str, Any]]:
+    rows = conn.execute(text(f"""
+        SELECT ctid::text AS row_ref, *
+        FROM "{_SCHEMA}"."{_TABLE}"
+        WHERE {_UTB_FILTER_SQL}
+        ORDER BY poradie, display_name, faculty NULLS LAST
+    """)).mappings().fetchall()
+    return [dict(row) for row in rows]
+
+
+def _load_detail_sidebar_resources(engine=None) -> dict[str, Any]:
+    engine = engine or get_remote_engine()
+    with engine.connect() as conn:
+        faculty_options = _fetch_faculty_options_from_conn(conn)
+        columns = _fetch_author_columns_from_conn(conn, faculty_options)
+        rows = _fetch_author_rows_from_conn(conn)
+        can_write = _can_write_authors_from_conn(conn)
+    return {
+        "rows": rows,
+        "columns": columns,
+        "faculty_options": faculty_options,
+        "can_write": can_write,
+        "workplace_tree": load_workplace_tree(remote_engine=engine),
+    }
+
+
 def get_author_editor_config(engine=None) -> dict[str, Any]:
     engine = engine or get_remote_engine()
     return {
@@ -112,27 +157,13 @@ def get_author_editor_config(engine=None) -> dict[str, Any]:
 def can_write_authors(engine=None) -> bool:
     engine = engine or get_remote_engine()
     with engine.connect() as conn:
-        grants = conn.execute(text(f"""
-            SELECT privilege_type
-            FROM information_schema.role_table_grants
-            WHERE table_schema = :schema
-              AND table_name = :table
-              AND grantee = current_user
-        """), {"schema": _SCHEMA, "table": _TABLE}).fetchall()
-    available = {str(row.privilege_type).upper() for row in grants}
-    return {"SELECT", "INSERT", "UPDATE", "DELETE"}.issubset(available)
+        return _can_write_authors_from_conn(conn)
 
 
 def _fetch_author_rows(engine=None) -> list[dict[str, Any]]:
     engine = engine or get_remote_engine()
     with engine.connect() as conn:
-        rows = conn.execute(text(f"""
-            SELECT ctid::text AS row_ref, *
-            FROM "{_SCHEMA}"."{_TABLE}"
-            WHERE {_UTB_FILTER_SQL}
-            ORDER BY poradie, display_name, faculty NULLS LAST
-        """)).mappings().fetchall()
-    return [dict(row) for row in rows]
+        return _fetch_author_rows_from_conn(conn)
 
 
 def _row_to_summary(row: dict[str, Any]) -> dict[str, Any]:
@@ -167,9 +198,7 @@ def _summary_key(row: dict[str, Any]) -> str:
     return _normalize_search(summary["display_name"] or summary["primary"])
 
 
-def _group_summaries(rows: list[dict[str, Any]], engine=None) -> list[dict[str, Any]]:
-    engine = engine or get_remote_engine()
-    workplace_tree = load_workplace_tree(remote_engine=engine)
+def _group_summaries(rows: list[dict[str, Any]], workplace_tree: dict[int, Any]) -> list[dict[str, Any]]:
     grouped: dict[str, dict[str, Any]] = {}
     order: list[str] = []
 
@@ -211,18 +240,19 @@ def _group_summaries(rows: list[dict[str, Any]], engine=None) -> list[dict[str, 
     return [grouped[key] for key in order]
 
 
-def _modal_details_from_rows(rows: list[dict[str, Any]], row_ref: str, engine=None) -> dict[str, Any] | None:
-    target = None
-    for row in rows:
-        if str(row.get("row_ref")) == str(row_ref):
-            target = row
-            break
+def _modal_details_from_rows(
+    rows: list[dict[str, Any]],
+    row_ref: str,
+    workplace_tree: dict[int, Any],
+) -> dict[str, Any] | None:
+    target = next((row for row in rows if str(row.get("row_ref")) == str(row_ref)), None)
     if target is None:
         return None
 
     key = _summary_key(target)
     group_rows = [row for row in rows if _summary_key(row) == key]
-    summary = _group_summaries(group_rows, engine=engine)[0]
+    summaries = _group_summaries(group_rows, workplace_tree=workplace_tree)
+    summary = summaries[0] if summaries else _row_to_summary(target)
 
     preferred_email = str(target.get("public_email") or "").strip() or str(target.get("email") or "").strip()
     return {
@@ -259,7 +289,10 @@ def _row_search_text(row: dict[str, Any]) -> str:
 
 def get_all_authors(engine=None) -> list[dict[str, Any]]:
     """Vrati vsetky interne riadky autorov z remote utb_authors."""
-    return _group_summaries(_fetch_author_rows(engine), engine=engine)
+    return _group_summaries(
+        _fetch_author_rows(engine),
+        workplace_tree=load_workplace_tree(remote_engine=engine or get_remote_engine()),
+    )
 
 
 def search_authors(query: str, engine=None) -> list[dict[str, Any]]:
@@ -273,7 +306,22 @@ def search_authors(query: str, engine=None) -> list[dict[str, Any]]:
             matched_rows.append(row)
             if len(matched_rows) >= 50:
                 break
-    return _group_summaries(matched_rows, engine=engine)
+    return _group_summaries(
+        matched_rows,
+        workplace_tree=load_workplace_tree(remote_engine=engine or get_remote_engine()),
+    )
+
+
+def get_record_sidebar_data(engine=None) -> dict[str, Any]:
+    resources = _load_detail_sidebar_resources(engine)
+    return {
+        "authors": _group_summaries(resources["rows"], workplace_tree=resources["workplace_tree"]),
+        "editor": {
+            "columns": resources["columns"],
+            "can_write": resources["can_write"],
+            "faculty_options": resources["faculty_options"],
+        },
+    }
 
 
 def _full_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
@@ -302,8 +350,13 @@ def get_author(row_ref: str, engine=None) -> dict[str, Any] | None:
 
 
 def get_author_modal_details(row_ref: str, engine=None) -> dict[str, Any] | None:
+    engine = engine or get_remote_engine()
     rows = _fetch_author_rows(engine)
-    return _modal_details_from_rows(rows, row_ref, engine=engine)
+    return _modal_details_from_rows(
+        rows,
+        row_ref,
+        workplace_tree=load_workplace_tree(remote_engine=engine),
+    )
 
 
 def _normalize_payload(payload: dict[str, Any], *, for_create: bool, engine=None) -> dict[str, Any]:

@@ -4,209 +4,10 @@
 
 {% block extra_css %}
 <link rel="stylesheet" href="{{ url_for('static', filename='css/diff.css') }}">
-<style>
-/* ── Layout ── */
-.detail-layout {
-  display: flex;
-  gap: 0;
-  align-items: flex-start;
-}
-
-/* ── Panel toggle button ── */
-.panel-toggle-wrap {
-  flex-shrink: 0;
-  padding-top: 2px;
-}
-#panel-toggle-btn {
-  writing-mode: vertical-rl;
-  text-orientation: mixed;
-  height: fit-content;
-  padding: 8px 4px;
-  font-size: 0.75rem;
-  white-space: nowrap;
-  border-radius: 4px;
-}
-
-/* ── Authors panel ── */
-.authors-panel {
-  flex-shrink: 0;
-  width: 230px;
-  min-width: 0;
-  overflow: hidden;
-  transition: width 0.25s ease, padding 0.25s ease, opacity 0.2s ease,
-              margin 0.25s ease, border-width 0.25s ease;
-  border: 1px solid #dee2e6;
-  border-radius: 6px;
-  background: #fafafa;
-  position: sticky;
-  top: 1rem;
-  align-self: flex-start;
-  margin-left: 6px;
-  margin-right: 10px;
-  padding: 0.5rem !important;
-}
-.authors-panel.collapsed {
-  width: 0 !important;
-  padding: 0 !important;
-  margin-left: 0 !important;
-  margin-right: 4px !important;
-  opacity: 0;
-  border-width: 0 !important;
-  pointer-events: none;
-}
-
-/* ── Table wrap ── */
-.authors-list-scroll {
-  max-height: 400px;
-  overflow-y: auto;
-  font-size: 0.8rem;
-  padding-right: 0.9rem !important;
-  scrollbar-gutter: stable;
-}
-.author-row {
-  gap: 0.5rem;
-}
-.author-row > div:first-child {
-  min-width: 0;
-  padding-right: 0.25rem;
-  cursor: pointer;
-}
-.author-menu-btn {
-  min-width: 1.65rem;
-}
-.author-affiliation-line {
-  font-size: 0.75rem;
-  color: #6c757d;
-}
-
-.detail-table-wrap {
-  flex: 1;
-  overflow-x: auto;
-  min-width: 0;
-}
-
-/* ── Table ── */
-#detail-table {
-  table-layout: fixed;
-  min-width: 800px;
-  border-collapse: collapse;
-}
-#detail-table th,
-#detail-table td {
-  vertical-align: top;
-  font-size: 0.875rem;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-#detail-table .field-label {
-  background: #f8f9fa;
-  font-size: 0.8rem;
-  font-weight: 600;
-  color: #444;
-  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
-  /* Newliny v label-i (napr. zlúčená Affiliation) sa renderujú ako samostatné riadky.
-     Slovo, ktoré obsahuje bodky/podčiarkovníky (typický názov DB stĺpca) sa lomí
-     až vtedy, keď sa nezmestí. */
-  white-space: pre-line;
-  overflow: hidden;
-  word-break: break-word;
-  overflow-wrap: anywhere;
-}
-#detail-table thead th {
-  background: #f1f3f5;
-  font-size: 0.85rem;
-  position: relative;
-  user-select: none;
-}
-
-/* ── Resize handle ── */
-.resize-handle {
-  position: absolute;
-  right: 0;
-  top: 0;
-  bottom: 0;
-  width: 6px;
-  cursor: col-resize;
-  z-index: 1;
-}
-.resize-handle:hover,
-.col-resizing .resize-handle:hover {
-  background: rgba(13, 110, 253, 0.35);
-}
-body.col-resizing { cursor: col-resize !important; user-select: none !important; }
-
-/* ── Null rows ── */
-.null-row td { color: #bbb; font-style: italic; }
-
-/* ── Editable cells ── */
-td[data-col-type='repozitar'] { cursor: text; }
-td[data-col-type='repozitar'].editing { background: #fffde7; }
-td[data-col-type='wos'],
-td[data-col-type='scopus'] {
-  cursor: text;
-  outline: none;
-}
-td[data-col-type='wos']:focus,
-td[data-col-type='scopus']:focus {
-  outline: 2px solid #0d6efd;
-  background: #fff;
-}
-.cell-modified { background: #fff8e1 !important; }
-
-/* ── Fix badge ── */
-.fix-badge {
-  display: inline-block;
-  font-size: 0.68rem;
-  background: #d1fae5;
-  border: 1px solid #6ee7b7;
-  border-radius: 3px;
-  padding: 1px 5px;
-  cursor: pointer;
-  vertical-align: middle;
-  line-height: 1.4;
-  color: #065f46;
-  margin-left: 3px;
-}
-.fix-badge:hover { background: #a7f3d0; }
-
-/* ── Save button ── */
-#save-all-btn { display: none; }
-#save-all-btn-bottom { display: none; }
-
-/* ── Crossref section ── */
-.crossref-section-header td {
-  font-size: 0.75rem;
-  letter-spacing: 0.03em;
-  text-transform: uppercase;
-}
-.crossref-row td { font-size: 0.8rem; color: #555; }
-
-.author-modal-trigger {
-  border: 0;
-  background: transparent;
-  color: #0d6efd;
-  padding: 0;
-  line-height: 1;
-}
-.author-modal-trigger:hover {
-  color: #0a58ca;
-}
-.author-source-external {
-  text-decoration: line-through;
-  color: #dc2626;
-}
-
-/* ── Column drag-and-drop ── */
-#detail-table thead th { cursor: grab; }
-#detail-table thead th.col-drag-over { background: #dbeafe !important; outline: 2px solid #3b82f6; }
-body.col-dragging { cursor: grabbing !important; }
-body.col-dragging * { cursor: grabbing !important; user-select: none !important; }
-</style>
+<link rel="stylesheet" href="{{ url_for('static', filename='css/detail.css') }}">
 {% endblock %}
 
 {% block content %}
-
-<!-- Breadcrumb -->
 <nav aria-label="breadcrumb" class="mb-2">
   <ol class="breadcrumb">
     <li class="breadcrumb-item"><a href="/">Zoznam</a></li>
@@ -214,61 +15,50 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
   </ol>
 </nav>
 
-<!-- Hlavička -->
 <div class="d-flex align-items-start justify-content-between mb-3 gap-2 flex-wrap">
   <div style="min-width:0; flex:1;">
     <h5 class="mb-1" style="line-height:1.4;">
       {{ detail.main.get('dc.title', [''])[0] if detail.main.get('dc.title') else '(bez názvu)' }}
     </h5>
     {% if detail.checked_at %}
-    <span class="badge bg-success">
-      Skontrolované ({{ detail.checked_at|length }}×)
-    </span>
+    <span class="badge bg-success">Skontrolované ({{ detail.checked_at|length }}×)</span>
     {% endif %}
   </div>
 
-  <!-- Akcie -->
   <div class="d-flex gap-2 align-items-center flex-shrink-0 flex-wrap">
     {% if not detail.read_only %}
-    <button id="save-all-btn"
-            class="btn btn-sm btn-warning"
-            onclick="window.saveAllChanges()">
-      Ulo&#382;i&#357; do z&#225;sobn&#237;ka (<span id="changed-count">0</span>)
+    <button id="save-all-btn" class="btn btn-sm btn-warning" onclick="window.saveAllChanges()">
+      Uložiť do zásobníka (<span id="changed-count">0</span>)
     </button>
-
-    <button id="approve-btn-top"
-            class="btn btn-sm btn-success"
-            type="button"
-            onclick="window.approveRecord()">
-      Schv&#225;li&#357; a ulo&#382;i&#357;
+    <button id="approve-btn-top" class="btn btn-sm btn-success" type="button" onclick="window.approveRecord()">
+      Schváliť a uložiť
     </button>
     {% else %}
-    <span class="badge bg-secondary">Read-only hist&#243;ria</span>
+    <span class="badge bg-secondary">Read-only história</span>
     {% endif %}
   </div>
 </div>
 
 {% if detail.is_history and detail.history_info %}
 <section class="mb-3 border rounded bg-light p-2">
-  <div class="fw-semibold small mb-1">Historick&#253; z&#225;znam zl&#250;&#269;enia</div>
+  <div class="fw-semibold small mb-1">Historický záznam zlúčenia</div>
   <div class="small">
-    <span class="text-muted">V&#253;sledn&#253; z&#225;znam:</span>
+    <span class="text-muted">Výsledný záznam:</span>
     <a href="{{ url_for('records.record_detail', resource_id=detail.history_info.kept_resource_id) }}">#{{ detail.history_info.kept_resource_id }}</a>
     {% if detail.history_info.other_resource_id %}
-    <span class="text-muted">&middot; druh&#253; z&#225;znam:</span>
+    <span class="text-muted">· druhý záznam:</span>
     <span class="font-monospace">#{{ detail.history_info.other_resource_id }}</span>
     {% endif %}
-    <span class="text-muted">&middot; zhoda:</span> {{ detail.history_info.match_type }}
+    <span class="text-muted">· zhoda:</span> {{ detail.history_info.match_type }}
     {% if detail.history_info.merged_at %}
-    <span class="text-muted">&middot; zl&#250;&#269;en&#233;:</span> {{ detail.history_info.merged_at }}
+    <span class="text-muted">· zlúčené:</span> {{ detail.history_info.merged_at }}
     {% endif %}
     {% if detail.history_info.match_score is not none %}
-    <span class="text-muted">&middot; sk&#243;re:</span> {{ "%.2f"|format(detail.history_info.match_score) }}
+    <span class="text-muted">· skóre:</span> {{ "%.2f"|format(detail.history_info.match_score) }}
     {% endif %}
   </div>
 </section>
 {% endif %}
-
 
 <div id="approve-msg"></div>
 
@@ -280,7 +70,7 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
     <div class="small">
       <a class="font-monospace" href="{{ url_for('records.record_history_detail', row_ref=src.history_row_ref) }}">#{{ src.resource_id }}</a>
       {% if src.is_kept_original %}
-      <span class="badge bg-secondary ms-1">p&#244;vodn&#225; verzia ponechan&#233;ho z&#225;znamu</span>
+      <span class="badge bg-secondary ms-1">pôvodná verzia ponechaného záznamu</span>
       {% endif %}
       <span class="text-muted">· zhoda: {{ src.match_type }}</span>
       {% if src.merged_at %}
@@ -323,19 +113,13 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
 </section>
 {% endif %}
 
-<!-- ── Hlavný layout ── -->
 <div class="detail-layout">
-
-  <!-- Panel toggle button -->
   <div class="panel-toggle-wrap">
-    <button id="panel-toggle-btn"
-            class="btn btn-outline-secondary"
-            title="Skryť panel autorov">
+    <button id="panel-toggle-btn" class="btn btn-outline-secondary" title="Skryť panel autorov">
       <span class="panel-arrow">◀</span> Autori
     </button>
   </div>
 
-  <!-- Ľavý panel: UTB autori -->
   <aside id="authors-panel" class="authors-panel">
     <div class="fw-bold small mb-2" style="white-space:nowrap;">UTB autori</div>
     {% if not author_editor.can_write %}
@@ -344,17 +128,15 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
     </div>
     {% endif %}
 
-    <!-- Vyh?ad?vanie -->
     <input type="search"
            id="authors-search"
            class="form-control form-control-sm mb-2"
-           placeholder="H&#318;ada&#357; autora"
+           placeholder="Hľadať autora"
            hx-get="/api/authors"
            hx-target="#authors-list"
            hx-trigger="keyup changed delay:300ms"
            name="q">
 
-    <!-- Zoznam autorov -->
     <div id="authors-list" class="authors-list-scroll px-2">
       {% for author in utb_authors %}
       <div class="author-row d-flex justify-content-between align-items-center py-1 border-bottom"
@@ -381,7 +163,6 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
                 type="button"
                 data-row-ref="{{ author.row_ref }}"
                 data-author-name="{{ author.primary or author.display_name }}">&#8942;</button>
-
       </div>
       {% else %}
       <p class="text-muted small">Žiadni autori.</p>
@@ -396,24 +177,20 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
     </button>
   </aside>
 
-  <!-- ── Hlavná tabuľka metadát ── -->
   <div class="detail-table-wrap">
     <table class="table table-bordered table-sm" id="detail-table"
            data-doi="{{ doi or '' }}"
            data-resource-id="{{ resource_id }}">
       <colgroup>
-        <col class="col-label"     style="width:20%;">
+        <col class="col-label" style="width:20%;">
         <col class="col-repozitar" style="width:20%;">
-        <col class="col-wos"       style="width:20%;">
-        <col class="col-scopus"    style="width:20%;">
-        <col class="col-crossref"  style="width:20%;">
+        <col class="col-wos" style="width:20%;">
+        <col class="col-scopus" style="width:20%;">
+        <col class="col-crossref" style="width:20%;">
       </colgroup>
       <thead class="table-light">
         <tr>
-          <th class="col-label">
-            Metadata
-            <div class="resize-handle"></div>
-          </th>
+          <th class="col-label">Metadata<div class="resize-handle"></div></th>
           <th class="col-repozitar">
             Repozitár
             <br><small class="text-muted fw-normal">utb_metadata_arr</small>
@@ -424,223 +201,77 @@ body.col-dragging * { cursor: grabbing !important; user-select: none !important;
             <br><small class="text-muted fw-normal">Web of Science</small>
             <div class="resize-handle"></div>
           </th>
-          <th class="col-scopus">
-            Scopus
-            <div class="resize-handle"></div>
-          </th>
+          <th class="col-scopus">Scopus<div class="resize-handle"></div></th>
           <th class="col-crossref">
             Crossref
-            <span class="spinner-border spinner-border-sm text-muted ms-1"
-                  id="crossref-spinner" role="status"
-                  style="width:.75rem;height:.75rem;"></span>
+            <span class="spinner-border spinner-border-sm text-muted ms-1" id="crossref-spinner" role="status" style="width:.75rem;height:.75rem;"></span>
             <div class="resize-handle"></div>
           </th>
         </tr>
       </thead>
 
-      <!-- Hlavné riadky metadát -->
       <tbody id="main-body">
         {% for f in detail.fields %}
         {% set is_null = not f.main and not f.proposed and not f.wos_val and not f.scopus_val %}
         <tr class="{% if is_null %}null-row{% endif %}" data-field-key="{{ f.key }}">
-
-          <!-- Metadata label -->
           <td class="field-label col-label" title="{{ f.key }}">{{ f.label }}</td>
 
-          <!-- Repozitár (klik = edit) -->
           <td class="col-repozitar"
               data-col-type="repozitar"
               data-field="{{ f.key }}"
               data-original="{{ f.main or '' }}"
-              data-proposed="{{ f.proposed or '' }}">
-            {# Obsah nastaví JS cez renderRepozitarCell #}
-          </td>
+              data-proposed="{{ f.proposed or '' }}"></td>
 
-          <!-- WOS stĺpec -->
           <td class="col-wos"
               data-col-type="wos"
-              {% if f.wos_field_key and not detail.read_only %}
-              contenteditable="true"
-              data-field="{{ f.wos_field_key }}"
-              {% endif %}
+              {% if f.wos_field_key and not detail.read_only %}contenteditable="true" data-field="{{ f.wos_field_key }}"{% endif %}
               data-original="{{ f.wos_val or '' }}">
             {% if f.wos_val %}{{ f.wos_val }}{% else %}<span class="text-muted">—</span>{% endif %}
           </td>
 
-          <!-- Scopus stĺpec -->
           <td class="col-scopus"
               data-col-type="scopus"
-              {% if f.scopus_field_key and not detail.read_only %}
-              contenteditable="true"
-              data-field="{{ f.scopus_field_key }}"
-              {% endif %}
+              {% if f.scopus_field_key and not detail.read_only %}contenteditable="true" data-field="{{ f.scopus_field_key }}"{% endif %}
               data-original="{{ f.scopus_val or '' }}">
             {% if f.scopus_val %}{{ f.scopus_val }}{% else %}<span class="text-muted">—</span>{% endif %}
           </td>
 
-          <!-- Crossref bunka – naplní JS po načítaní z API -->
           <td class="col-crossref" data-cf-field="{{ f.key }}"><span class="text-muted">—</span></td>
         </tr>
         {% endfor %}
       </tbody>
 
-      <!-- Extra Crossref polia bez mapovania – naplní JS -->
       <tbody id="crossref-extra-body"></tbody>
-
     </table>
-  </div><!-- /detail-table-wrap -->
-
-</div><!-- /detail-layout -->
-
-<div class="modal fade" id="author-sources-modal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-xl modal-dialog-scrollable">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title">Zdroje mien autorov</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Zavrieť"></button>
-      </div>
-      <div class="modal-body">
-        <div class="table-responsive">
-          <table class="table table-sm align-middle mb-0">
-            <thead>
-              <tr>
-                <th>Mená</th>
-                <th>Scopus</th>
-                <th>WoS</th>
-              </tr>
-            </thead>
-            <tbody id="author-sources-modal-body"></tbody>
-          </table>
-        </div>
-      </div>
-    </div>
   </div>
 </div>
 
-<div class="modal fade" id="author-info-modal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-lg modal-dialog-scrollable">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title">UTB autor</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Zavrieť"></button>
-      </div>
-      <div class="modal-body">
-        <div id="author-info-error" class="alert alert-danger d-none py-2 px-3 small"></div>
-        <dl class="row small mb-0">
-          <dt class="col-sm-4">Display name</dt>
-          <dd class="col-sm-8" id="author-info-display-name">—</dd>
+{% include "record/_modal_author_sources.html" %}
+{% include "record/_modal_author_info.html" %}
+{% include "record/_modal_author_editor.html" %}
 
-          <dt class="col-sm-4">Surname</dt>
-          <dd class="col-sm-8" id="author-info-surname">—</dd>
-
-          <dt class="col-sm-4">Given name</dt>
-          <dd class="col-sm-8" id="author-info-given-name">—</dd>
-
-          <dt class="col-sm-4">Middle name</dt>
-          <dd class="col-sm-8" id="author-info-middle-name">—</dd>
-
-          <dt class="col-sm-4">ORCID</dt>
-          <dd class="col-sm-8" id="author-info-orcid">—</dd>
-
-          <dt class="col-sm-4">Scopus ID</dt>
-          <dd class="col-sm-8" id="author-info-scopusid">—</dd>
-
-          <dt class="col-sm-4">WoS ID</dt>
-          <dd class="col-sm-8" id="author-info-wos-id">—</dd>
-
-          <dt class="col-sm-4">Fakulty a pracoviská</dt>
-          <dd class="col-sm-8" id="author-info-affiliations">—</dd>
-
-          <dt class="col-sm-4">E-mail</dt>
-          <dd class="col-sm-8" id="author-info-email">—</dd>
-        </dl>
-      </div>
-      <div class="modal-footer">
-        <a id="author-info-open-editor"
-           class="btn btn-outline-primary btn-sm"
-           href="{{ url_for('records.author_editor') }}">
-          Otvoriť v samostatnom okne
-        </a>
-        <button type="button" class="btn btn-secondary btn-sm" data-bs-dismiss="modal">Zavrieť</button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<div class="modal fade" id="author-editor-modal" tabindex="-1" aria-hidden="true">
-  <div class="modal-dialog modal-lg modal-dialog-scrollable">
-    <div class="modal-content">
-      <div class="modal-header">
-        <h5 class="modal-title" id="author-editor-title">UTB autor</h5>
-        <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Zavrieť"></button>
-      </div>
-      <div class="modal-body">
-        <div id="author-editor-error" class="alert alert-danger d-none py-2 px-3 small"></div>
-        <form id="author-editor-form" class="row g-3">
-          {% for column in author_editor.columns %}
-          <div class="col-md-6">
-            <label class="form-label small fw-semibold" for="author-field-{{ column.name }}">{{ column.label }}</label>
-            {% if column.kind == "select" %}
-            <select class="form-select form-select-sm"
-                    id="author-field-{{ column.name }}"
-                    name="{{ column.name }}"
-                    {% if column.required %}required{% endif %}>
-              <option value=""></option>
-              {% for option in column.options %}
-              <option value="{{ option }}">{{ option }}</option>
-              {% endfor %}
-            </select>
-            {% else %}
-            <input class="form-control form-control-sm"
-                   id="author-field-{{ column.name }}"
-                   name="{{ column.name }}"
-                   type="{{ 'number' if column.kind == 'number' else 'text' }}"
-                   {% if column.required %}required{% endif %}>
-            {% endif %}
-          </div>
-          {% endfor %}
-        </form>
-      </div>
-      <div class="modal-footer">
-        <button type="button" class="btn btn-outline-secondary btn-sm" data-bs-dismiss="modal">Zrušiť</button>
-        <button type="button"
-                id="author-editor-save-btn"
-                class="btn btn-primary btn-sm"
-                {% if not author_editor.can_write %}disabled{% endif %}>
-          Uložiť autora
-        </button>
-      </div>
-    </div>
-  </div>
-</div>
-
-<!-- Spodn&#233; tla&#269;idl&#225; -->
 <div class="d-flex justify-content-end gap-2 mt-4 pt-3 border-top">
   {% if not detail.read_only %}
-  <button id="save-all-btn-bottom"
-          class="btn btn-warning"
-          onclick="window.saveAllChanges()">
-    Ulo&#382;i&#357; do z&#225;sobn&#237;ka (<span id="changed-count-bottom">0</span>)
+  <button id="save-all-btn-bottom" class="btn btn-warning" onclick="window.saveAllChanges()">
+    Uložiť do zásobníka (<span id="changed-count-bottom">0</span>)
   </button>
-  <button id="approve-btn-bottom"
-          class="btn btn-success"
-          type="button"
-          onclick="window.approveRecord()">
-    Schv&#225;li&#357; a ulo&#382;i&#357;
+  <button id="approve-btn-bottom" class="btn btn-success" type="button" onclick="window.approveRecord()">
+    Schváliť a uložiť
   </button>
   {% endif %}
 </div>
-
 {% endblock %}
 
 {% block extra_js %}
 <script>
-  window.RESOURCE_ID  = "{{ resource_id }}";
+  window.RESOURCE_ID = "{{ resource_id }}";
   window.DETAIL_READ_ONLY = {{ "true" if detail.read_only else "false" }};
-  window.UTB_FACULTIES   = {{ faculties | tojson }};
+  window.UTB_FACULTIES = {{ faculties | tojson }};
   window.UTB_DEPARTMENTS = {{ departments | tojson }};
   window.authorEditorConfig = {{ author_editor | tojson }};
   window.authorModalData = {{ detail.author_modal_data | tojson }};
 </script>
+<script src="{{ url_for('static', filename='js/author_modal.js') }}"></script>
+<script src="{{ url_for('static', filename='js/sidebar_authors.js') }}"></script>
 <script src="{{ url_for('static', filename='js/detail.js') }}"></script>
 {% endblock %}

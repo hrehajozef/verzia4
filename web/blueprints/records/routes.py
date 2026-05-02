@@ -28,9 +28,9 @@ from web.services.queue_service import (
 from web.services.authors_service import (
     create_author,
     delete_author,
-    get_all_authors,
     get_author,
     get_author_editor_config,
+    get_record_sidebar_data,
     update_author,
 )
 
@@ -197,20 +197,15 @@ def api_search():
     return jsonify({"results": results})
 
 
-def _safe_get_all_authors() -> list:
+def _safe_get_record_sidebar_data() -> dict:
     try:
-        return get_all_authors()
+        return get_record_sidebar_data()
     except Exception as exc:
-        print(f"[record_detail] get_all_authors zlyhalo: {type(exc).__name__}: {exc}")
-        return []
-
-
-def _safe_get_author_editor_config() -> dict:
-    try:
-        return get_author_editor_config()
-    except Exception as exc:
-        print(f"[record_detail] get_author_editor_config zlyhalo: {type(exc).__name__}: {exc}")
-        return {"columns": [], "can_write": False, "faculty_options": []}
+        print(f"[record_detail] get_record_sidebar_data zlyhalo: {type(exc).__name__}: {exc}")
+        return {
+            "authors": [],
+            "editor": {"columns": [], "can_write": False, "faculty_options": []},
+        }
 
 
 @bp.route("/record/<resource_id>")
@@ -241,8 +236,7 @@ def record_detail(resource_id: str):
     if not detail:
         abort(404)
 
-    authors = _safe_get_all_authors()
-    author_editor = _safe_get_author_editor_config()
+    sidebar_data = _safe_get_record_sidebar_data()
     doi = detail["main"].get("dc.identifier.doi")
     if isinstance(doi, list):
         doi = doi[0] if doi else None
@@ -250,8 +244,8 @@ def record_detail(resource_id: str):
     return render_template(
         "record/detail.html",
         detail=detail,
-        utb_authors=authors,
-        author_editor=author_editor,
+        utb_authors=sidebar_data["authors"],
+        author_editor=sidebar_data["editor"],
         doi=doi,
         resource_id=resource_id,
         faculties=FACULTIES,
@@ -276,8 +270,7 @@ def record_history_detail():
     if not detail:
         abort(404)
 
-    authors = _safe_get_all_authors()
-    author_editor = _safe_get_author_editor_config()
+    sidebar_data = _safe_get_record_sidebar_data()
     doi = detail["main"].get("dc.identifier.doi")
     if isinstance(doi, list):
         doi = doi[0] if doi else None
@@ -285,8 +278,8 @@ def record_history_detail():
     return render_template(
         "record/detail.html",
         detail=detail,
-        utb_authors=authors,
-        author_editor=author_editor,
+        utb_authors=sidebar_data["authors"],
+        author_editor=sidebar_data["editor"],
         doi=doi,
         resource_id=detail["resource_id"],
         faculties=FACULTIES,
